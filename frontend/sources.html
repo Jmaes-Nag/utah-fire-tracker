@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Sources & Transparency Directory</title>
+    
+    <!-- Google Fonts: Inter (UI) & Orbitron (Telemetry Numbers) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome for Dashboard Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+    <!-- Tailwind CSS v3 via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Orbitron', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            orange: '#f97316',
+                            red: '#ef4444',
+                            amber: '#f59e0b',
+                            dark: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <script>
+        // Init theme immediately based on localStorage to avoid flash
+        const savedTheme = localStorage.getItem("theme") || "light";
+        if (savedTheme === "light") {
+            document.documentElement.classList.remove("dark");
+        } else {
+            document.documentElement.classList.add("dark");
+        }
+    </script>
+</head>
+<body class="h-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans transition-colors duration-250 flex flex-col justify-between overflow-y-auto">
+    
+    <!-- Main Content Area -->
+    <main class="max-w-4xl w-full mx-auto px-6 py-12 flex-1">
+        
+        <!-- Header -->
+        <header class="mb-10 pb-6 border-b border-slate-200 dark:border-slate-800">
+            <div class="flex items-center gap-4 mb-4">
+                <a href="/" class="px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-brand-orange text-xs text-slate-650 dark:text-slate-400 hover:text-brand-orange rounded-lg shadow-sm transition-all duration-200 flex items-center gap-1.5">
+                    <i class="fa-solid fa-arrow-left"></i> Back to Dashboard
+                </a>
+            </div>
+            <h1 class="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 flex items-center gap-3">
+                <i class="fa-solid fa-circle-info text-brand-orange"></i> Data Transparency & Sources Directory
+            </h1>
+            <p class="text-sm text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                This dashboard aggregates data across federal, state, and global spatial monitoring networks to deliver real-time wildfire intelligence and predictive alerting overlays. Below is the detail of every queried service and the exact data points extracted.
+            </p>
+        </header>
+
+        <!-- Sources Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Card 1: NIFC Wildfire Locations -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-brand-orange font-mono">Wildfire Incidents</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NIFC WFIGS Point Locations</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Retrieves geographical coordinates, incident names, discovery start times, containment percentages, cause determinations, and estimates of sizes (acres) for all active wildfires in Utah.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">National Interagency Fire Center (NIFC)</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                </div>
+            </div>
+
+            <!-- Card 2: NWS Weather Telemetry -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-blue-500 font-mono">Meteorology</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NWS Grid Observation Network</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Polls current meteorological parameters (wind speed, wind direction, temperature, relative humidity) from weather sensors. Employs a fallback loop up to 3 stations if observation data is null.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">National Weather Service (NWS)</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">api.weather.gov (REST API)</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">On-Demand per Incident Selection</span></div>
+                </div>
+            </div>
+
+            <!-- Card 3: FEMA Emergency Alerts -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-brand-red font-mono">Public Safety Alerts</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">FEMA IPAWS CAP Warnings</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Queries live public safety polygons under Common Alerting Protocol (CAP), focusing on immediate evacuation mandates, threat alerts, or wildfire warning zones inside Utah.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">Federal Emergency Management Agency (FEMA)</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">Queried dynamically on page load</span></div>
+                </div>
+            </div>
+
+            <!-- Card 4: NOAA HMS Smoke Plumes -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-amber-500 font-mono">Atmospheric Quality</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NOAA Satellite Smoke Plumes</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Downloads daily vector outlines of smoke tracks detected by environmental satellites, categorizing them into Light, Medium, and Heavy densities representing aerosol scattering layers.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">NOAA Satellite Analysis Branch</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                </div>
+            </div>
+
+            <!-- Card 5: EPA PM2.5 Monitors -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-500 font-mono">Air Quality</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">OpenAQ / EPA AirNow Monitor Feed</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Pulls hourly PM2.5 concentrations (µg/m³) from active particulate monitors across Utah. Mapped instantly to the official US EPA Air Quality Index (AQI) scale.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">EPA AirNow Network / OpenAQ</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                </div>
+            </div>
+
+            <!-- Card 6: Utah Municipal Boundaries -->
+            <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                <div>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-purple-500 font-mono">Administrative Limits</span>
+                    <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">Utah Municipal Boundaries (SGID)</h3>
+                    <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
+                        Provides official municipal boundary shapes. Used locally to intersect against fire buffers and wind vectors to trigger "Ready" and "Set" threat status warnings.
+                    </p>
+                </div>
+                <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
+                    <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">Utah Geospatial Resource Center (UGRC)</span></div>
+                    <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">SGID Feature Service GeoJSON</span></div>
+                    <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">Cached Permanently to Local Storage</span></div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="p-6 border-t border-slate-200 dark:border-slate-800 bg-slate-100/50 dark:bg-slate-900/50 text-[10px] text-center text-slate-500 font-mono">
+        <span>Utah Wildfire & Wind Tracker Dashboard © 2026</span>
+    </footer>
+
+</body>
+</html>

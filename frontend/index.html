@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Utah Wildfire & Wind Tracker</title>
+    
+    <!-- Google Fonts: Inter (UI) & Orbitron (Telemetry Numbers) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome for Dashboard Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+    <!-- Leaflet.js Mapping Library -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    
+    <!-- Leaflet.markercluster Extension -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+
+    <!-- Tailwind CSS v3 via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Orbitron', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            orange: '#f97316',
+                            red: '#ef4444',
+                            amber: '#f59e0b',
+                            dark: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Custom CSS styles -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="h-full overflow-hidden text-slate-800 dark:text-slate-100 font-sans transition-colors duration-250">
+
+    <!-- 3-Panel Main Layout -->
+    <div class="grid grid-cols-[360px_1fr_380px] h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+        
+        <!-- Left Panel: Incident List -->
+        <aside class="flex flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 h-full overflow-hidden shadow-2xl transition-colors duration-200">
+            <!-- Sidebar Header -->
+            <div class="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
+                <div class="flex items-center gap-3 mb-2">
+                    <span class="relative flex h-3 w-3">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-red opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-3 w-3 bg-brand-red"></span>
+                    </span>
+                    <h1 class="text-lg font-bold tracking-wider text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                        UTAH FIRE & WIND <span class="text-xs px-2 py-0.5 rounded bg-brand-orange/20 text-brand-orange border border-brand-orange/30 font-semibold font-mono">LIVE</span>
+                    </h1>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Real-time state-wide wildfire intelligence and NWS meteorological analysis.</p>
+                
+                <!-- Search Bar -->
+                <div class="relative">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 text-sm"></i>
+                    <input 
+                        type="text" 
+                        id="search-input" 
+                        placeholder="Search incidents by name..." 
+                        class="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-brand-orange focus:ring-1 focus:ring-brand-orange/50 transition-all duration-200"
+                    />
+                </div>
+            </div>
+
+            <!-- Stats Bar -->
+            <div class="grid grid-cols-3 gap-2 px-5 py-3.5 bg-slate-100/40 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800 text-center">
+                <div>
+                    <div id="stat-total-fires" class="text-base font-bold font-mono text-brand-orange">-</div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Active Fires</div>
+                </div>
+                <div>
+                    <div id="stat-total-acres" class="text-base font-bold font-mono text-brand-amber">-</div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Total Acres</div>
+                </div>
+                <div>
+                    <div id="stat-avg-contain" class="text-base font-bold font-mono text-emerald-500 dark:text-emerald-400">-</div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-semibold">Avg Contain</div>
+                </div>
+            </div>
+
+            <!-- Scrollable Content Area -->
+            <div id="sidebar-scroll-container" class="flex-1 overflow-y-auto custom-scrollbar">
+                
+                <!-- Alerts Section -->
+                <div id="alerts-section" class="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-100/30 dark:bg-slate-950/20 hidden">
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-1.5 cursor-pointer select-none" id="toggle-alerts-btn">
+                        <i class="fa-solid fa-chevron-down transition-transform duration-200" id="alerts-caret"></i>
+                        <i class="fa-solid fa-triangle-exclamation text-brand-orange animate-pulse"></i> Municipal Threat Alerts
+                        <span class="help-tooltip-trigger cursor-pointer text-slate-400 hover:text-slate-650 dark:text-slate-500 dark:hover:text-slate-300 ml-1" data-tooltip="tooltip-risk-alerts" title="What are threat levels?"><i class="fa-solid fa-circle-question fa-sm"></i></span>
+                    </h2>
+                    <div id="alert-cards" class="space-y-2.5"></div>
+                </div>
+
+                <!-- Incident List -->
+                <div id="incident-list" class="p-4 space-y-3">
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-1.5 cursor-pointer select-none" id="toggle-incidents-btn">
+                        <i class="fa-solid fa-chevron-down transition-transform duration-200" id="incidents-caret"></i>
+                        <i class="fa-solid fa-fire text-brand-red"></i> Utah Wildfire Incidents
+                    </h2>
+                    
+                    <div id="incident-list-content" class="space-y-3">
+                        <!-- Loading State -->
+                        <div id="sidebar-loading" class="flex flex-col items-center justify-center py-12 space-y-3">
+                            <div class="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 dark:border-slate-700 border-t-brand-orange"></div>
+                            <p class="text-xs text-slate-450 dark:text-slate-550">Querying NIFC databases...</p>
+                        </div>
+                        
+                        <!-- No Results State -->
+                        <div id="sidebar-empty" class="hidden flex flex-col items-center justify-center py-12 text-center px-4">
+                            <i class="fa-solid fa-circle-info text-2xl text-slate-350 dark:text-slate-600 mb-2"></i>
+                            <p class="text-sm font-medium text-slate-600 dark:text-slate-400">No active incidents found</p>
+                            <p class="text-xs text-slate-450 dark:text-slate-550 mt-1">Try modifying your search or check again later.</p>
+                        </div>
+                        
+                        <!-- Cards Container -->
+                        <div id="incident-cards" class="space-y-3"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-slate-950/60 text-[10px] text-slate-500 flex justify-between items-center px-4">
+                <a href="/sources.html" class="hover:underline hover:text-brand-orange transition-colors duration-150 flex items-center gap-1"><i class="fa-solid fa-circle-info text-brand-orange"></i> Data Transparency</a>
+                <span id="cache-indicator" class="flex items-center gap-1 text-slate-400 dark:text-slate-500 font-mono"><i class="fa-solid fa-clock animate-pulse"></i> Syncing...</span>
+            </div>
+        </aside>
+        
+        <!-- Center Panel: Map Canvas -->
+        <main class="relative h-full w-full overflow-hidden bg-slate-100 dark:bg-slate-950">
+            <!-- Map Container -->
+            <div id="map" class="h-full w-full z-0"></div>
+            
+            <!-- Map Overlay UI -->
+            <div class="absolute top-4 right-4 z-[1000] flex flex-col gap-2">
+                <!-- Theme Toggle Button -->
+                <button 
+                    id="theme-toggle-btn" 
+                    title="Toggle Light/Dark Theme" 
+                    class="p-2.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg shadow-lg flex items-center justify-center backdrop-blur-md transition-all duration-200"
+                >
+                    <i id="theme-toggle-icon" class="fa-solid fa-sun text-sm"></i>
+                </button>
+                
+                <!-- Reset View Button -->
+                <button 
+                    id="map-reset-btn" 
+                    title="Recenter Map on Utah" 
+                    class="p-2.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg shadow-lg flex items-center justify-center backdrop-blur-md transition-all duration-200"
+                >
+                    <i class="fa-solid fa-house text-sm"></i>
+                </button>
+            </div>
+            
+            <!-- Map Watermark / Coordinates -->
+            <div class="absolute bottom-4 left-4 z-[1000] px-3 py-1.5 bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800/80 rounded-md text-[10px] font-mono text-slate-600 dark:text-slate-400 backdrop-blur-sm pointer-events-none shadow-lg">
+                <span id="map-coordinates">39.3210° N, 111.0937° W</span>
+            </div>
+        </main>
+        
+        <!-- Right Panel: Telemetry Dock -->
+        <section class="flex flex-col bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full overflow-hidden shadow-2xl transition-colors duration-200">
+            <!-- Telemetry Header -->
+            <div class="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 backdrop-blur-md">
+                <h2 class="text-md font-bold tracking-wider text-slate-700 dark:text-slate-300 uppercase flex items-center justify-between gap-2">
+                    <span class="flex items-center gap-2"><i class="fa-solid fa-gauge-high text-brand-orange"></i> Meteorological Telemetry</span>
+                    <span class="help-tooltip-trigger cursor-pointer text-slate-400 hover:text-slate-650 dark:text-slate-500 dark:hover:text-slate-300" data-tooltip="tooltip-weather-telemetry" title="Why track weather?"><i class="fa-solid fa-circle-question fa-sm"></i></span>
+                </h2>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Real-time wind, temperature and humidity sensors relative to the active boundary.</p>
+            </div>
+
+            <!-- Telemetry Content Panel -->
+            <div id="telemetry-panel" class="flex-1 overflow-y-auto p-5 custom-scrollbar flex flex-col justify-between">
+                
+                <!-- Default / Empty State -->
+                <div id="telemetry-empty" class="flex-1 flex flex-col items-center justify-center text-center py-20 px-6">
+                    <div class="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-950 flex items-center justify-center border border-slate-200 dark:border-slate-800 mb-4 animate-pulse">
+                        <i class="fa-solid fa-wind text-2xl text-slate-400 dark:text-slate-600"></i>
+                    </div>
+                    <p class="text-sm font-semibold text-slate-700 dark:text-slate-300">No Incident Selected</p>
+                    <p class="text-xs text-slate-450 dark:text-slate-500 mt-2 leading-relaxed">
+                        Select an active wildfire incident from the sidebar or click a map marker to request current local wind vector telemetry from api.weather.gov.
+                    </p>
+                </div>
+                
+                <!-- Loading State -->
+                <div id="telemetry-loading" class="hidden flex-1 flex flex-col items-center justify-center text-center py-20">
+                    <div class="relative w-16 h-16 mb-4">
+                        <div class="absolute inset-0 rounded-full border-2 border-slate-200 dark:border-slate-800"></div>
+                        <div class="absolute inset-0 rounded-full border-2 border-t-brand-orange animate-spin"></div>
+                    </div>
+                    <p class="text-sm font-semibold text-slate-700 dark:text-slate-300">Retrieving Wind Telemetry</p>
+                    <p class="text-xs text-slate-450 dark:text-slate-500 mt-1">Locating nearby NWS weather station...</p>
+                </div>
+
+                <!-- Error State -->
+                <div id="telemetry-error" class="hidden flex-1 flex flex-col items-center justify-center text-center py-20 px-6">
+                    <i class="fa-solid fa-triangle-exclamation text-brand-red text-3xl mb-3"></i>
+                    <p class="text-sm font-semibold text-slate-700 dark:text-slate-300">Telemetry Request Failed</p>
+                    <p id="telemetry-error-msg" class="text-xs text-slate-450 dark:text-slate-500 mt-2 leading-relaxed">
+                        Failed to fetch local weather observations from NWS weather stations.
+                    </p>
+                    <button id="telemetry-retry-btn" class="mt-4 px-4 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-350 dark:border-slate-700 rounded text-xs transition-colors">
+                        Retry Sensor Link
+                    </button>
+                </div>
+
+                <!-- Loaded State -->
+                <div id="telemetry-data" class="hidden flex-1 flex flex-col justify-between h-full space-y-6">
+                    
+                    <!-- Fire Details Info Card -->
+                    <div class="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl p-4 shadow-sm dark:shadow-inner">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 id="tel-fire-name" class="text-md font-bold text-slate-800 dark:text-slate-100 truncate pr-2">Fire Name</h3>
+                            <span id="tel-fire-acres" class="text-xs px-2 py-0.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded font-mono font-medium text-brand-amber">0 Acres</span>
+                        </div>
+                        
+                        <div class="grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400 mt-3 pt-3 border-t border-slate-200 dark:border-slate-900/50">
+                            <div>
+                                <span class="block text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">County</span>
+                                <span id="tel-fire-county" class="font-medium text-slate-700 dark:text-slate-300">County Name</span>
+                            </div>
+                            <div>
+                                <span class="block text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">Coordinates</span>
+                                <span id="tel-fire-coords" class="font-mono text-slate-700 dark:text-slate-300">0.000, 0.000</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Wind Vector Sensor (Compass Dial) -->
+                    <div class="flex flex-col items-center bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800/50 rounded-xl p-5 shadow-sm dark:shadow-lg relative overflow-hidden">
+                        <span class="absolute top-3 left-4 text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider">Wind Vector Sensor</span>
+                        
+                        <!-- Compass Design -->
+                        <div class="relative w-40 h-40 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-center justify-center my-4 shadow-inner">
+                            <!-- Cardinal Markers -->
+                            <span class="absolute top-1 text-[9px] font-bold text-slate-400 dark:text-slate-500 font-mono">N</span>
+                            <span class="absolute right-2.5 text-[9px] font-bold text-slate-400 dark:text-slate-500 font-mono">E</span>
+                            <span class="absolute bottom-1 text-[9px] font-bold text-slate-400 dark:text-slate-500 font-mono">S</span>
+                            <span class="absolute left-2.5 text-[9px] font-bold text-slate-400 dark:text-slate-500 font-mono">W</span>
+                            
+                            <!-- Inner Dial Ring -->
+                            <div class="w-32 h-32 rounded-full border border-slate-100 dark:border-slate-900/60 border-dashed flex items-center justify-center">
+                                <!-- Degree Marks (subtle dots) -->
+                                <div class="absolute inset-0 rotate-45 pointer-events-none border-l border-r border-slate-100 dark:border-slate-900/20"></div>
+                                <div class="absolute inset-0 rotate-[135deg] pointer-events-none border-l border-r border-slate-100 dark:border-slate-900/20"></div>
+                                
+                                <!-- Rotating Needle -->
+                                <div id="wind-compass-needle" class="absolute w-2 h-28 flex items-center justify-center transition-transform duration-700 ease-out" style="transform: rotate(0deg);">
+                                    <!-- Needle Pointer (Point towards where wind is blowing, or coming from. Usually arrow points to direction wind is blowing) -->
+                                    <div class="w-0.5 h-14 bg-gradient-to-t from-transparent to-brand-orange relative">
+                                        <div class="absolute top-0 -left-1 w-2.5 h-2.5 bg-brand-orange rotate-45 rounded-sm shadow-[0_0_8px_rgba(249,115,22,0.8)]"></div>
+                                    </div>
+                                    <div class="w-0.5 h-14 bg-gradient-to-b from-transparent to-slate-200 dark:to-slate-800"></div>
+                                </div>
+                                
+                                <!-- Center Hub -->
+                                <div class="w-5 h-5 rounded-full bg-slate-50 dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-800 shadow-md z-10 flex items-center justify-center">
+                                    <div class="w-1.5 h-1.5 rounded-full bg-brand-orange animate-ping"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Direction Display -->
+                        <div class="text-center">
+                            <span id="tel-wind-dir-card" class="text-xl font-extrabold font-mono text-slate-700 dark:text-slate-200">N/A</span>
+                            <span id="tel-wind-dir-deg" class="text-sm font-medium font-mono text-slate-500 dark:text-slate-400 ml-1">(0°)</span>
+                            <span class="block text-[10px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">Wind Heading Vector</span>
+                        </div>
+                    </div>
+
+                    <!-- Sensor Grid (Wind Speed, Temp, Humidity) -->
+                    <div class="grid grid-cols-2 gap-3">
+                        
+                        <!-- Wind Speed Card -->
+                        <div class="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between shadow-sm dark:shadow-inner">
+                            <div class="flex items-center gap-1.5 text-[10px] text-slate-450 dark:text-slate-500 font-semibold uppercase tracking-wider">
+                                <i class="fa-solid fa-gauge text-brand-orange"></i> Wind Speed
+                            </div>
+                            <div class="my-2">
+                                <span id="tel-wind-speed" class="text-2xl font-bold font-mono text-slate-800 dark:text-slate-200">0.0</span>
+                                <span class="text-[10px] text-slate-400 dark:text-slate-500 font-bold ml-0.5 font-mono">MPH</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-900/60 pt-1.5 mt-1 font-mono flex justify-between">
+                                <span>Metric:</span>
+                                <span id="tel-wind-speed-metric">0.0 km/h</span>
+                            </div>
+                        </div>
+
+                        <!-- Temperature Card -->
+                        <div class="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between shadow-sm dark:shadow-inner">
+                            <div class="flex items-center gap-1.5 text-[10px] text-slate-450 dark:text-slate-500 font-semibold uppercase tracking-wider">
+                                <i class="fa-solid fa-temperature-half text-brand-red"></i> Temperature
+                            </div>
+                            <div class="my-2">
+                                <span id="tel-temp" class="text-2xl font-bold font-mono text-slate-800 dark:text-slate-200">--°</span>
+                                <span class="text-[10px] text-slate-400 dark:text-slate-500 font-bold ml-0.5 font-mono">F</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-900/60 pt-1.5 mt-1 font-mono flex justify-between">
+                                <span>Metric:</span>
+                                <span id="tel-temp-metric">--°C</span>
+                            </div>
+                        </div>
+
+                        <!-- Humidity Card -->
+                        <div class="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between shadow-sm dark:shadow-inner col-span-2">
+                            <div class="flex items-center justify-between text-[10px] text-slate-450 dark:text-slate-500 font-semibold uppercase tracking-wider">
+                                <span class="flex items-center gap-1.5">
+                                    <i class="fa-solid fa-droplet text-blue-500 dark:text-blue-400"></i> Relative Humidity
+                                </span>
+                                <span id="tel-humidity-val" class="font-mono text-slate-700 dark:text-slate-300">0%</span>
+                            </div>
+                            
+                            <!-- Progress Bar for Humidity -->
+                            <div class="w-full bg-slate-200 dark:bg-slate-900 rounded-full h-1.5 mt-2.5 overflow-hidden border border-slate-200/50 dark:border-slate-800/50">
+                                <div id="tel-humidity-bar" class="bg-blue-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Station Info Footer -->
+                    <div class="bg-slate-50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-850 rounded-lg p-3 text-[10px] text-slate-500 dark:text-slate-400 space-y-1">
+                        <div class="flex justify-between">
+                            <span class="text-slate-400 dark:text-slate-500 font-medium">Reporting Sensor:</span>
+                            <span id="tel-station-id" class="font-mono font-bold text-slate-650 dark:text-slate-300">KXXX</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-400 dark:text-slate-500 font-medium">Station Name:</span>
+                            <span id="tel-station-name" class="font-medium text-slate-650 dark:text-slate-300 truncate max-w-[200px]" title="">Station Description</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-400 dark:text-slate-500 font-medium">Observed:</span>
+                            <span id="tel-obs-time" class="font-medium text-slate-650 dark:text-slate-300">--/-- --:-- --</span>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </section>
+        
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>

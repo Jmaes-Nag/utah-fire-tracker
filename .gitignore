@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.cache/
+.pytest_cache/
+
+# Local downloaded spatial data (Auto-downloaded by backend on startup)
+backend/app/data/*.geojson
+
+# Environment variables & virtual environments
+.env
+.env.local
+.venv
+venv/
+ENV/
+env/
+
+# IDE / Editor configurations
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
