@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Map Guide & Data Directory</title>
+    <title>Map Guide & Data Sources</title>
     
     <!-- Google Fonts: Inter (UI) & Orbitron (Telemetry Numbers) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -55,29 +55,29 @@
         <header class="mb-8 pb-6 border-b border-slate-200 dark:border-slate-800">
             <div class="flex items-center gap-4 mb-4">
                 <a href="/" class="px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-brand-orange text-xs text-slate-650 dark:text-slate-400 hover:text-brand-orange rounded-lg shadow-sm transition-all duration-200 flex items-center gap-1.5">
-                    <i class="fa-solid fa-arrow-left"></i> Back to Dashboard
+                    <i class="fa-solid fa-arrow-left"></i> Back to Map
                 </a>
             </div>
             <h1 class="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100 flex items-center gap-3">
-                <i class="fa-solid fa-circle-question text-brand-orange"></i> Map Guide & Data Directory
+                <i class="fa-solid fa-circle-question text-brand-orange"></i> Map Guide & Data Sources
             </h1>
             <p class="text-sm text-slate-550 dark:text-slate-400 mt-2 leading-relaxed">
-                Learn how to read the dashboard measurements, active fire boundaries, and safety alert corridors, or explore the underlying telemetry feeds.
+                Read a simple explanation of how to interpret the wildfire map and weather hazards, or view links to our direct data feeds.
             </p>
         </header>
 
         <!-- Navigation Tabs -->
         <div class="flex border-b border-slate-200 dark:border-slate-800 mb-8">
-            <button id="btn-simple" class="px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200">
-                <i class="fa-solid fa-map-location-dot text-brand-orange mr-1.5"></i> Quick Map Guide (Simple)
+            <button id="btn-guide" class="px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200">
+                <i class="fa-solid fa-map-location-dot text-brand-orange mr-1.5"></i> How to Read the Map
             </button>
-            <button id="btn-advanced" class="px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200">
-                <i class="fa-solid fa-server mr-1.5"></i> Technical Data Directory (Advanced)
+            <button id="btn-sources" class="px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200">
+                <i class="fa-solid fa-server mr-1.5"></i> Data Sources & URLs
             </button>
         </div>
 
-        <!-- TAB 1: SIMPLE MAP GUIDE -->
-        <div id="tab-simple" class="space-y-8">
+        <!-- TAB 1: HOW TO READ THE MAP -->
+        <div id="tab-guide" class="space-y-8">
             
             <!-- Section: Fire & Heat -->
             <section class="space-y-4">
@@ -86,10 +86,10 @@
                     <div class="p-4 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl">
                         <h3 class="font-bold text-slate-800 dark:text-slate-200 text-sm flex items-center gap-2">
                             <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-orange/15 text-brand-orange"><i class="fa-solid fa-fire text-xs"></i></span>
-                            Wildfire Pins (Flame Badges)
+                            Wildfire Badges (Active Incidents)
                         </h3>
                         <p class="text-xs text-slate-550 dark:text-slate-450 mt-2 leading-relaxed">
-                            Points representing official incident reports. Orange flame badges show active wildfires, and larger red flame badges show major fires exceeding 1,000 acres. Click a pin to view weather telemetry and containment levels.
+                            These badges mark official active fires. Small orange badges represent smaller fires, and larger red badges show major wildfires exceeding 1,000 acres. Click any badge to display local weather measurements and suppression status.
                         </p>
                     </div>
                     <div class="p-4 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl">
@@ -98,7 +98,7 @@
                             Burn Perimeters (Charred Ground)
                         </h3>
                         <p class="text-xs text-slate-550 dark:text-slate-450 mt-2 leading-relaxed">
-                            The dark charcoal/blackened boundaries mapped on the floor. Everything inside these shapes represents land that has already burned. These polygons expand over time as the fire progresses.
+                            The dark charcoal/blackened shapes outlined on the map show exactly where land has already burned. These shapes represent the cumulative footprint of the fire and expand as the fire spreads.
                         </p>
                     </div>
                     <div class="p-4 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl md:col-span-2">
@@ -107,7 +107,7 @@
                             Active Heat (Satellite Hotspots)
                         </h3>
                         <p class="text-xs text-slate-550 dark:text-slate-450 mt-2 leading-relaxed">
-                            Small glowing dots (yellow, orange, or red) representing thermal heat anomalies captured by satellites in the last 24 hours. Clustered dots on the edge of perimeters show exactly where the fire is currently active and spreading.
+                            Small glowing dots (yellow, orange, or red) show hot spots detected by satellites in the last 24 hours. The brighter and denser these dots are, the more active the fire front is at that spot. Look for these clusters on the edges of burn perimeters to see where a fire is currently expanding.
                         </p>
                     </div>
                 </div>
@@ -123,7 +123,7 @@
                             Smoke Plume Shading
                         </h3>
                         <p class="text-xs text-slate-550 dark:text-slate-450 mt-2 leading-relaxed">
-                            Shaded cloud layers showing smoke drift. **Light (yellow)** represents thin haze, **Medium (orange)** represents thick smoke in the air column, and **Heavy (red)** represents dense ground-level smoke.
+                            Shaded cloud overlays indicate where smoke is drifting in the air. **Light (yellow)** represents thin haze, **Medium (orange)** is thick overhead smoke, and **Heavy (red)** is dense ground-level smoke.
                         </p>
                     </div>
                     <div class="p-4 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl">
@@ -132,7 +132,7 @@
                             Air Quality Index (AQI)
                         </h3>
                         <p class="text-xs text-slate-550 dark:text-slate-450 mt-2 leading-relaxed">
-                            Dotted EPA monitoring stations across Utah. A **Green** dot indicates safe air. **Orange/Red** dots mean soot/fine particulate counts (PM2.5) are high—asthma sufferers and sensitive groups should limit outdoor time.
+                            Air quality monitoring stations. **Green** dots indicate clean, safe air. **Orange/Red** dots mean soot/fine particulate counts (PM2.5) are high—sensitive groups (like asthma sufferers) should limit outdoor time.
                         </p>
                     </div>
                 </div>
@@ -140,14 +140,14 @@
 
             <!-- Section: Meteorology Parameters -->
             <section class="space-y-4">
-                <h2 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2"><i class="fa-solid fa-wind text-blue-500"></i> Understanding Weather Measurements</h2>
+                <h2 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2"><i class="fa-solid fa-wind text-blue-500"></i> Weather & Risk Indicators</h2>
                 <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl space-y-4">
                     <div class="flex gap-4">
                         <div class="text-blue-500 text-lg"><i class="fa-solid fa-location-arrow"></i></div>
                         <div>
                             <h4 class="font-bold text-slate-800 dark:text-slate-200 text-xs uppercase tracking-wider">Wind Speed & Heading</h4>
                             <p class="text-xs text-slate-550 dark:text-slate-450 mt-1 leading-relaxed">
-                                Wind dictates the speed and path of fire expansion. High wind speeds feed oxygen to flames and loft burning embers downwind to spark new fires. **Wind direction** is written as the heading *where the wind comes from* (e.g., a "South Wind" blows *towards* the North).
+                                Wind direction indicates where the wind is *coming from* (e.g., a "South Wind" blows *towards* the North). Stronger winds feed oxygen to the flames and carry embers downwind, creating potential danger paths.
                             </p>
                         </div>
                     </div>
@@ -156,143 +156,174 @@
                         <div>
                             <h4 class="font-bold text-slate-800 dark:text-slate-200 text-xs uppercase tracking-wider">Relative Humidity (RH)</h4>
                             <p class="text-xs text-slate-550 dark:text-slate-450 mt-1 leading-relaxed">
-                                Measures the amount of water vapor in the air. When **humidity is low (under 20%)**, the dry air rapidly sucks moisture out of forest trees, grass, and brush, turning them into highly flammable tinder.
+                                Represents the moisture content in the air. When **humidity falls below 20%**, the dry air sucks moisture out of forest trees, grass, and brush, turning them into highly flammable dry fuel.
                             </p>
                         </div>
                     </div>
                     <div class="flex gap-4 border-t border-slate-100 dark:border-slate-800/60 pt-4">
-                        <div class="text-blue-500 text-lg"><i class="fa-solid fa-temperature-high"></i></div>
+                        <div class="text-purple-500 text-lg"><i class="fa-solid fa-compass"></i></div>
                         <div>
-                            <h4 class="font-bold text-slate-800 dark:text-slate-200 text-xs uppercase tracking-wider">Temperature</h4>
+                            <h4 class="font-bold text-slate-800 dark:text-slate-200 text-xs uppercase tracking-wider">Safety & Warning Corridors</h4>
                             <p class="text-xs text-slate-550 dark:text-slate-450 mt-1 leading-relaxed">
-                                Higher temperatures accelerate fuel drying speeds. Combined with low humidity, high temperatures create optimal conditions for rapid fire spread and intense heat output.
+                                The map draws **Wind-Driven Risk Corridors** (blue overlay cones extending from active fires). If you search for an address:
                             </p>
+                            <ul class="list-disc list-inside mt-2 text-xs text-slate-550 dark:text-slate-450 space-y-1 pl-2">
+                                <li><strong class="text-rose-500">Critical Threat:</strong> The location falls inside an active FEMA warning/evacuation zone.</li>
+                                <li><strong class="text-amber-500">Warning Corridor:</strong> The location is downwind of an active fire, in the direct path of wind and drifting embers.</li>
+                                <li><strong class="text-emerald-500">Safe Zone:</strong> The location is currently outside active perimeters, risk cones, and alert zones.</li>
+                            </ul>
                         </div>
                     </div>
-                </div>
-            </section>
-
-            <!-- Section: Risk Corridors -->
-            <section class="space-y-4">
-                <h2 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2"><i class="fa-solid fa-compass text-purple-500"></i> Safety Corridors & Warnings</h2>
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    <p class="text-xs text-slate-550 dark:text-slate-450 leading-relaxed mb-3">
-                        The tracker calculates **Wind-Driven Risk Corridors** (blue overlay cones extending from active fires). These show the path downwind along which smoke and fire embers are currently blowing.
-                    </p>
-                    <p class="text-xs text-slate-550 dark:text-slate-450 leading-relaxed">
-                        When you type an address in the search box:
-                    </p>
-                    <ul class="list-disc list-inside mt-2 text-xs text-slate-550 dark:text-slate-450 space-y-1 pl-2">
-                        <li><strong class="text-rose-500">Critical Threat:</strong> The location falls inside an official active evacuation zone or municipality alert.</li>
-                        <li><strong class="text-amber-500">Warning Corridor:</strong> The location is downwind of a fire and inside the wind-driven risk cone, posing potential ember-lofting risks.</li>
-                        <li><strong class="text-emerald-500">Safe:</strong> The location is outside active threat and wind-corridor lines.</li>
-                    </ul>
                 </div>
             </section>
 
         </div>
 
-        <!-- TAB 2: TECHNICAL DATA DIRECTORY -->
-        <div id="tab-advanced" class="hidden space-y-8">
+        <!-- TAB 2: DATA SOURCES & DIRECTORY -->
+        <div id="tab-sources" class="hidden space-y-6">
             <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                This dashboard aggregates data across federal, state, and global spatial monitoring networks to deliver real-time wildfire intelligence. Below are details of every queried service, fields, and API endpoints.
+                This dashboard aggregates data across federal, state, and global spatial monitoring networks to deliver real-time wildfire intelligence. Below are direct links to every queried API endpoint.
             </p>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-4">
                 
-                <!-- Card 1: NIFC Wildfire Locations -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-brand-orange font-mono">Wildfire Incidents</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NIFC WFIGS Point Locations</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Retrieves geographical coordinates, incident names, discovery start times, containment percentages, cause determinations, and estimates of sizes (acres) for all active wildfires in Utah.
-                        </p>
+                <!-- Source 1: NIFC Wildfire Locations -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-brand-orange font-mono">Wildfire Incidents</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NIFC WFIGS Point Locations</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Provides incident names, coordinates, discovery times, containment percentages, and size estimates.
+                            </p>
+                        </div>
+                        <a href="https://services3.arcgis.com/T4gW1m13t7aLxGsq/ArcGIS/rest/services/Active_Wildland_Fire_Locations/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
                     </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">National Interagency Fire Center (NIFC)</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
-                    </div>
-                </div>
-
-                <!-- Card 2: NWS Weather Telemetry -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-blue-500 font-mono">Meteorology</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NWS Grid Observation Network</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Polls current meteorological parameters (wind speed, wind direction, temperature, relative humidity) from weather sensors. Employs a fallback loop up to 3 stations if observation data is null.
-                        </p>
-                    </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">National Weather Service (NWS)</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">api.weather.gov (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">On-Demand per Incident Selection</span></div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: National Interagency Fire Center (NIFC)</span>
+                        <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
 
-                <!-- Card 3: FEMA Emergency Alerts -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-brand-red font-mono">Public Safety Alerts</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">FEMA IPAWS CAP Warnings</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Queries live public safety polygons under Common Alerting Protocol (CAP), focusing on immediate evacuation mandates, threat alerts, or wildfire warning zones inside Utah.
-                        </p>
+                <!-- Source 2: NIFC Wildfire Perimeters -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-slate-500 font-mono">Boundaries</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NIFC WFIGS Fire Perimeters</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Provides geographical polygon boundaries showing current and historical burned areas.
+                            </p>
+                        </div>
+                        <a href="https://services3.arcgis.com/T4gW1m13t7aLxGsq/ArcGIS/rest/services/Wildland_Fire_Perimeters/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
                     </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">Federal Emergency Management Agency (FEMA)</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">Queried dynamically on page load</span></div>
-                    </div>
-                </div>
-
-                <!-- Card 4: NOAA HMS Smoke Plumes -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-amber-500 font-mono">Atmospheric Quality</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NOAA Satellite Smoke Plumes</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Downloads daily vector outlines of smoke tracks detected by environmental satellites, categorizing them into Light, Medium, and Heavy densities representing aerosol scattering layers.
-                        </p>
-                    </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">NOAA Satellite Analysis Branch</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: National Interagency Fire Center (NIFC)</span>
+                        <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
 
-                <!-- Card 5: EPA PM2.5 Monitors -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-500 font-mono">Air Quality</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">OpenAQ / EPA AirNow Monitor Feed</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Pulls hourly PM2.5 concentrations (µg/m³) from active particulate monitors across Utah. Mapped instantly to the official US EPA Air Quality Index (AQI) scale.
-                        </p>
+                <!-- Source 3: NWS Weather Telemetry -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-blue-500 font-mono">Meteorology</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NWS Grid Observation Network</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Queries real-time wind speed, wind direction, temperature, and relative humidity near selected coordinates.
+                            </p>
+                        </div>
+                        <a href="https://api.weather.gov" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Portal
+                        </a>
                     </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">EPA AirNow Network / OpenAQ</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: National Weather Service (NWS)</span>
+                        <span>Sync: 5-Minute Coordinate-Keyed Cache</span>
                     </div>
                 </div>
 
-                <!-- Card 6: NOAA Thermal Hotspots -->
-                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm flex flex-col justify-between hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
-                    <div>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-rose-500 font-mono">Satellite Heat</span>
-                        <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-1 mb-3">NOAA Satellite Hotspots</h3>
-                        <p class="text-xs text-slate-550 dark:text-slate-400 leading-relaxed mb-4">
-                            Queries real-time thermal anomaly pixels from MODIS and VIIRS satellite sensors. Features include Fire Radiative Power (FRP, measured in Megawatts), indicating combustion intensity.
-                        </p>
+                <!-- Source 4: NOAA Satellite Smoke Plumes -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-amber-500 font-mono">Atmospheric Quality</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NOAA Satellite Smoke Plumes</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Provides vector outlines of smoke dispersion areas across North America, classified by density.
+                            </p>
+                        </div>
+                        <a href="https://services8.arcgis.com/wb7Rv9HnpGy2AL3c/ArcGIS/rest/services/HMS_Smoke_Plumes_Daily/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-colors gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
                     </div>
-                    <div class="text-[10px] font-mono text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800/60 pt-3">
-                        <div class="flex justify-between"><span>Provider:</span> <span class="font-semibold text-slate-650 dark:text-slate-400">NOAA Hazard Mapping System</span></div>
-                        <div class="flex justify-between mt-1"><span>Format:</span> <span class="text-slate-650 dark:text-slate-400">ArcGIS FeatureServer (REST API)</span></div>
-                        <div class="flex justify-between mt-1"><span>Sync Rate:</span> <span class="text-slate-650 dark:text-slate-400">15-Minute Cache Protection</span></div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: NOAA Satellite Analysis Branch</span>
+                        <span>Sync: 15-Minute Cache Protection</span>
+                    </div>
+                </div>
+
+                <!-- Source 5: EPA PM2.5 Monitors -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-emerald-500 font-mono">Air Quality</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">US EPA AirNow Monitor Feed</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Displays real-time particulate sensor telemetry mapped to the EPA Air Quality Index (AQI) scale.
+                            </p>
+                        </div>
+                        <a href="https://services.arcgis.com/aUqgLS0yNO0gEqt6/ArcGIS/rest/services/AirNow_AQI/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: Environmental Protection Agency (EPA)</span>
+                        <span>Sync: 15-Minute Cache Protection</span>
+                    </div>
+                </div>
+
+                <!-- Source 6: FEMA Emergency Alerts -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-brand-red font-mono">Public Safety Alerts</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">FEMA IPAWS CAP Warnings</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Delivers official emergency warning boundaries and evacuation instruction polygons.
+                            </p>
+                        </div>
+                        <a href="https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/IPAWS_CAP_Active_Alerts/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: Federal Emergency Management Agency (FEMA)</span>
+                        <span>Sync: Queried Dynamically on Load</span>
+                    </div>
+                </div>
+
+                <!-- Source 7: NOAA Satellite Hotspots -->
+                <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
+                    <div class="flex justify-between items-start gap-4">
+                        <div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-rose-500 font-mono">Satellite Heat</span>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NOAA Satellite Hotspots</h3>
+                            <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
+                                Provides thermal heat anomalies from MODIS & VIIRS sensors, measuring Fire Radiative Power.
+                            </p>
+                        </div>
+                        <a href="https://services7.arcgis.com/aUqgLS0yNO0gEqt6/ArcGIS/rest/services/Active_Fire_Hotspots/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
+                        </a>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
+                        <span>Provider: NOAA Hazard Mapping System</span>
+                        <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
 
@@ -303,23 +334,23 @@
 
     <!-- Tab Switching Logic Script -->
     <script>
-        const btnSimple = document.getElementById("btn-simple");
-        const btnAdvanced = document.getElementById("btn-advanced");
-        const tabSimple = document.getElementById("tab-simple");
-        const tabAdvanced = document.getElementById("tab-advanced");
+        const btnGuide = document.getElementById("btn-guide");
+        const btnSources = document.getElementById("btn-sources");
+        const tabGuide = document.getElementById("tab-guide");
+        const tabSources = document.getElementById("tab-sources");
 
-        btnSimple.addEventListener("click", () => {
-            btnSimple.className = "px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200";
-            btnAdvanced.className = "px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200";
-            tabSimple.classList.remove("hidden");
-            tabAdvanced.classList.add("hidden");
+        btnGuide.addEventListener("click", () => {
+            btnGuide.className = "px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200";
+            btnSources.className = "px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200";
+            tabGuide.classList.remove("hidden");
+            tabSources.classList.add("hidden");
         });
 
-        btnAdvanced.addEventListener("click", () => {
-            btnAdvanced.className = "px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200";
-            btnSimple.className = "px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200";
-            tabAdvanced.classList.remove("hidden");
-            tabSimple.classList.add("hidden");
+        btnSources.addEventListener("click", () => {
+            btnSources.className = "px-5 py-3 border-b-2 border-brand-orange text-sm font-semibold text-slate-900 dark:text-white transition-all duration-200";
+            btnGuide.className = "px-5 py-3 border-b-2 border-transparent text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all duration-200";
+            tabSources.classList.remove("hidden");
+            tabGuide.classList.add("hidden");
         });
     </script>
 
