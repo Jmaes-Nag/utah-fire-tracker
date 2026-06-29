@@ -259,6 +259,7 @@ function initMap() {
     
     state.map.on('overlayadd', updateLegendVisibility);
     state.map.on('overlayremove', updateLegendVisibility);
+    updateLegendVisibility();
 }
 
 // Fetch Incidents and Layers from Backend API
@@ -277,6 +278,14 @@ async function fetchIncidents() {
             fetch("/api/hotspots")
         ]);
         
+        const failedFeeds = [];
+        if (incidentsRes.status >= 400) failedFeeds.push("Wildfire Incidents");
+        if (alertsRes.status >= 400) failedFeeds.push("FEMA CAP Alerts");
+        if (smokeRes.status >= 400) failedFeeds.push("Smoke Plumes");
+        if (aqiRes.status >= 400) failedFeeds.push("Air Quality (AQI)");
+        if (perimetersRes.status >= 400) failedFeeds.push("Burn Perimeters");
+        if (hotspotsRes.status >= 400) failedFeeds.push("Active satellite hotspots");
+
         if (incidentsRes.status >= 400) {
             throw new Error(`API returned HTTP ${incidentsRes.status} for incidents`);
         }
@@ -310,6 +319,15 @@ async function fetchIncidents() {
             document.getElementById("cache-indicator").title = "Timestamp of backend NIFC API cache synchronization (local time)";
         } else {
             document.getElementById("cache-indicator").innerHTML = `<i class="fa-solid fa-check text-emerald-500"></i> Up-to-date`;
+        }
+        
+        // Display partial feed failures if any occurred
+        if (failedFeeds.length > 0) {
+            const indicatorEl = document.getElementById("cache-indicator");
+            if (indicatorEl) {
+                indicatorEl.innerHTML = `<span class="text-rose-500 font-bold hover:underline flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Feed Outage (${failedFeeds.length})</span>`;
+                indicatorEl.title = `The following services are currently experiencing issues: ${failedFeeds.join(", ")}. Using offline backup caches where available.`;
+            }
         }
         
         try {
@@ -372,8 +390,16 @@ async function fetchIncidents() {
         console.error("Error fetching incidents:", error);
         sidebarLoading.classList.add("hidden");
         sidebarEmpty.classList.remove("hidden");
-        sidebarEmpty.querySelector("p").textContent = "Database Connection Offline";
-        sidebarEmpty.querySelectorAll("p")[1].textContent = "Could not fetch wildfire incidents from API.";
+        const headingP = sidebarEmpty.querySelector("p");
+        if (headingP) headingP.textContent = "Database Connection Offline";
+        const descP = sidebarEmpty.querySelectorAll("p")[1];
+        if (descP) descP.textContent = "Could not fetch wildfire incidents from API.";
+        
+        const indicatorEl = document.getElementById("cache-indicator");
+        if (indicatorEl) {
+            indicatorEl.innerHTML = `<span class="text-rose-500 font-bold flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Offline</span>`;
+            indicatorEl.title = "Cannot establish connection to the local tracker backend server.";
+        }
     }
 }
 
@@ -447,8 +473,8 @@ function renderIncidents() {
                 class="border rounded-xl p-4 transition-all duration-200 cursor-pointer shadow-md flex flex-col justify-between border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 hover:border-slate-350 dark:hover:border-slate-700 text-slate-800 dark:text-slate-100"
             >
                 <div class="flex justify-between items-start mb-1.5">
-                    <h3 class="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate max-w-[200px]" title="${incident.name}">
-                        ${incident.name}
+                    <h3 class="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate max-w-[200px]" title="${escapeHtml(incident.name)}">
+                        ${escapeHtml(incident.name)}
                     </h3>
                     <span class="text-[10px] px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-brand-amber font-mono font-medium">
                         ${acresText} Ac
@@ -456,7 +482,7 @@ function renderIncidents() {
                 </div>
                 
                 <p class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mb-3">
-                    <i class="fa-solid fa-map-pin text-[10px] text-slate-400 dark:text-slate-500"></i> ${incident.county} County
+                    <i class="fa-solid fa-map-pin text-[10px] text-slate-400 dark:text-slate-500"></i> ${escapeHtml(incident.county)} County
                 </p>
                 
                 <!-- Containment Bar -->
@@ -471,7 +497,7 @@ function renderIncidents() {
                 </div>
 
                 <div class="flex justify-between items-center text-[10px] text-slate-400 dark:text-slate-500 pt-2 border-t border-slate-250 dark:border-slate-900/60 font-mono">
-                    <span>Cause: <strong class="text-slate-650 dark:text-slate-450">${incident.cause}</strong></span>
+                    <span>Cause: <strong class="text-slate-650 dark:text-slate-450">${escapeHtml(incident.cause)}</strong></span>
                     <span>Discovered: ${dateStr}</span>
                 </div>
             </div>
@@ -517,8 +543,8 @@ function populateMapMarkers() {
         // Bind interactive popup
         const popupContent = `
             <div class="p-1.5 font-sans select-none">
-                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">${incident.name}</h4>
-                <p class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><i class="fa-solid fa-location-dot text-slate-400 dark:text-slate-500"></i> ${incident.county} County</p>
+                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">${escapeHtml(incident.name)}</h4>
+                <p class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><i class="fa-solid fa-location-dot text-slate-400 dark:text-slate-500"></i> ${escapeHtml(incident.county)} County</p>
                 <div class="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-[10px] font-mono">
                     <div>
                         <span class="text-slate-450 dark:text-slate-550 block">SIZE</span>
@@ -731,8 +757,8 @@ function renderAlerts() {
             firesText = alert.fires.map(f => {
                 return `
                     <div class="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex justify-between">
-                        <span>🔥 ${f.name}</span>
-                        <span class="font-mono text-slate-400 dark:text-slate-500">${f.distance_miles} mi (${f.wind_direction} @ ${f.wind_speed_mph} mph)</span>
+                        <span>🔥 ${escapeHtml(f.name)}</span>
+                        <span class="font-mono text-slate-400 dark:text-slate-500">${escapeHtml(f.distance_miles)} mi (${escapeHtml(f.wind_direction)} @ ${escapeHtml(f.wind_speed_mph)} mph)</span>
                     </div>
                 `;
             }).join("");
@@ -740,7 +766,7 @@ function renderAlerts() {
             const firstFema = alert.fema_alerts[0];
             firesText = `
                 <div class="text-[11px] text-slate-500 dark:text-slate-400 mt-1 italic">
-                    ${firstFema.event}: ${firstFema.headline || 'Active evacuation or warning area'}
+                    ${escapeHtml(firstFema.event)}: ${escapeHtml(firstFema.headline || 'Active evacuation or warning area')}
                 </div>
             `;
         }
@@ -754,8 +780,8 @@ function renderAlerts() {
                 onclick="selectAlert(${index})"
             >
                 <div class="flex justify-between items-start gap-2 mb-1.5">
-                    <h3 class="font-bold text-slate-800 dark:text-slate-200 text-xs truncate max-w-[160px]" title="${alert.city}">
-                        ${alert.city}
+                    <h3 class="font-bold text-slate-800 dark:text-slate-200 text-xs truncate max-w-[160px]" title="${escapeHtml(alert.city)}">
+                        ${escapeHtml(alert.city)}
                     </h3>
                     <div class="flex gap-1 items-center">
                         ${femaBadge}
@@ -898,11 +924,11 @@ function renderPerimeters(geojsonData) {
                 <div class="p-1.5 text-xs font-sans max-w-[200px]">
                     <strong class="text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-bold"><i class="fa-solid fa-draw-polygon text-slate-500"></i> Burn Perimeter</strong>
                     <div class="mt-2 text-[10px] space-y-1 font-mono">
-                        <div>Name: <span class="font-bold text-slate-700 dark:text-slate-350">${name}</span></div>
-                        <div>Acres: <span class="text-slate-500">${acres}</span></div>
+                        <div>Name: <span class="font-bold text-slate-700 dark:text-slate-350">${escapeHtml(name)}</span></div>
+                        <div>Acres: <span class="text-slate-500">${escapeHtml(acres)}</span></div>
             `;
             if (comments) {
-                popupContent += `<div>Info: <span class="text-slate-450 text-[9px] block max-h-[60px] overflow-y-auto">${comments}</span></div>`;
+                popupContent += `<div>Info: <span class="text-slate-450 text-[9px] block max-h-[60px] overflow-y-auto">${escapeHtml(comments)}</span></div>`;
             }
             popupContent += `
                     </div>
@@ -960,9 +986,9 @@ function renderSmokePlumes(plumes) {
             <div class="p-1.5 text-xs font-sans">
                 <strong class="text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-bold"><i class="fa-solid fa-smog text-amber-500 animate-pulse"></i> NOAA HMS Smoke Plume</strong>
                 <div class="mt-2 text-[10px] space-y-1 font-mono">
-                    <div>Density: <span class="font-bold text-slate-700 dark:text-slate-350">${plume.density}</span></div>
-                    <div>Source: <span class="text-slate-500">${plume.satellite}</span></div>
-                    <div>Observed: <span class="text-slate-500">${plume.start} UTC</span></div>
+                    <div>Density: <span class="font-bold text-slate-700 dark:text-slate-350">${escapeHtml(plume.density)}</span></div>
+                    <div>Source: <span class="text-slate-500">${escapeHtml(plume.satellite)}</span></div>
+                    <div>Observed: <span class="text-slate-500">${escapeHtml(plume.start)} UTC</span></div>
                 </div>
             </div>
         `);
@@ -988,21 +1014,21 @@ function renderAqiStations(stations) {
         
         const popupHtml = `
             <div class="p-1.5 font-sans select-none max-w-[200px]">
-                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-0.5">${station.name}</h4>
-                <p class="text-[10px] text-slate-450 dark:text-slate-500 font-medium">Source: ${station.provider}</p>
+                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-0.5">${escapeHtml(station.name)}</h4>
+                <p class="text-[10px] text-slate-450 dark:text-slate-500 font-medium">Source: ${escapeHtml(station.provider)}</p>
                 
                 <div class="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center gap-4">
                     <div>
                         <span class="text-[9px] text-slate-450 dark:text-slate-550 block">PM2.5</span>
-                        <strong class="text-xs text-slate-700 dark:text-slate-300 font-mono">${station.pm25} µg/m³</strong>
+                        <strong class="text-xs text-slate-700 dark:text-slate-300 font-mono">${escapeHtml(station.pm25)} µg/m³</strong>
                     </div>
                     <div class="text-right">
                         <span class="text-[9px] text-slate-450 dark:text-slate-550 block">AQI INDEX</span>
-                        <strong class="text-xs font-mono px-2 py-0.5 rounded" style="background: ${station.color}15; color: ${station.color}">${station.aqi}</strong>
+                        <strong class="text-xs font-mono px-2 py-0.5 rounded" style="background: ${station.color}15; color: ${station.color}">${escapeHtml(station.aqi)}</strong>
                     </div>
                 </div>
                 <div class="mt-2.5 text-[9px] text-center py-1 rounded bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800/80 font-bold uppercase tracking-wide" style="color: ${station.color}">
-                    ${station.tier}
+                    ${escapeHtml(station.tier)}
                 </div>
             </div>
         `;
@@ -1045,7 +1071,7 @@ function renderHotspots(hotspots) {
         const popupHtml = `
             <div class="p-1.5 font-sans select-none max-w-[180px]">
                 <strong class="text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-bold"><i class="fa-solid fa-circle-dot text-rose-500 animate-pulse"></i> Thermal Hotspot</strong>
-                <p class="text-[9px] text-slate-450 dark:text-slate-500 font-medium">Satellite: ${spot.satellite} (${spot.method})</p>
+                <p class="text-[9px] text-slate-450 dark:text-slate-550 font-medium">Satellite: ${escapeHtml(spot.satellite)} (${escapeHtml(spot.method)})</p>
                 <div class="mt-2.5 pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
                     <div>
                         <span class="text-[9px] text-slate-450 dark:text-slate-550 block">Heat Output (FRP)</span>
@@ -1193,18 +1219,18 @@ function displayGeocodeResult(lat, lon, displayName, safety) {
     if (safety.inFema) {
         statusClass = "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 animate-pulse";
         statusText = "🔴 CRITICAL ALERT: FEMA ACTIVE ZONE";
-        statusDesc = `<strong>Event:</strong> ${safety.femaDetails.event}<br/><strong>Instruction:</strong> ${safety.femaDetails.instruction || safety.femaDetails.description || 'Follow local evacuation orders.'}`;
+        statusDesc = `<strong>Event:</strong> ${escapeHtml(safety.femaDetails.event)}<br/><strong>Instruction:</strong> ${escapeHtml(safety.femaDetails.instruction || safety.femaDetails.description || 'Follow local evacuation orders.')}`;
     } else if (safety.inCorridor) {
         statusClass = "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20";
         statusText = "🟠 WARNING: RISK CORRIDOR";
-        let fireList = safety.threateningFires.map(f => `• ${f.name} (${f.distance} mi away, wind ${f.windDir} @ ${f.windSpeed} mph)`).join('<br/>');
+        let fireList = safety.threateningFires.map(f => `• ${escapeHtml(f.name)} (${escapeHtml(f.distance)} mi away, wind ${escapeHtml(f.windDir)} @ ${escapeHtml(f.windSpeed)} mph)`).join('<br/>');
         statusDesc = `Location is downwind of active fires:<br/>${fireList}`;
     }
 
     const popupHtml = `
         <div class="p-3 font-sans max-w-[280px]">
             <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">📍 Search Result</h4>
-            <p class="text-[10px] text-slate-500 dark:text-slate-400 mb-2 truncate" title="${displayName}">${displayName}</p>
+            <p class="text-[10px] text-slate-500 dark:text-slate-400 mb-2 truncate" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</p>
             
             <div class="p-2 border rounded-lg text-xs leading-relaxed ${statusClass}">
                 <div class="font-bold mb-1 uppercase tracking-wider text-[10px]">${statusText}</div>
