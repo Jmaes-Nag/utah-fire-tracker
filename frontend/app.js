@@ -20,6 +20,17 @@ const state = {
     rightCollapsed: window.innerWidth < 1024
 };
 
+// Utility to escape HTML, preventing XSS injection from external APIs
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 // DOM Elements
 const searchInput = document.getElementById("search-input");
 const statTotalFires = document.getElementById("stat-total-fires");
@@ -97,6 +108,10 @@ function initMap() {
         zoomControl: false,
         attributionControl: true
     }).setView(utahCenter, defaultZoom);
+
+    // Create custom pane for smoke layers (z-index 350, behind other overlays at 400)
+    state.map.createPane('smokePane');
+    state.map.getPane('smokePane').style.zIndex = 350;
 
     // Custom Zoom Control Position
     L.control.zoom({
@@ -223,18 +238,18 @@ function initMap() {
             if (!state.legendControl._map) {
                 state.legendControl.addTo(state.map);
             }
-            const smokeSec = document.querySelector(".legend-section:first-child");
-            const aqiSec = document.querySelector(".legend-section:nth-child(2)");
+            const sections = document.querySelectorAll(".legend-section");
+            const smokeSec = sections[0];
+            const aqiSec = sections[1];
             if (smokeSec) smokeSec.style.display = hasSmoke ? 'block' : 'none';
             if (aqiSec) aqiSec.style.display = hasAqi ? 'block' : 'none';
             
             // Toggle separator class
-            const separator = document.querySelector(".legend-section.border-t");
-            if (separator) {
+            if (aqiSec) {
                 if (hasSmoke && hasAqi) {
-                    separator.classList.add("border-t", "pt-2", "mt-2");
+                    aqiSec.classList.add("border-t", "pt-2", "mt-2");
                 } else {
-                    separator.classList.remove("border-t", "pt-2", "mt-2");
+                    aqiSec.classList.remove("border-t", "pt-2", "mt-2");
                 }
             }
         } else {
@@ -903,7 +918,15 @@ function renderPerimeters(geojsonData) {
 function renderSmokePlumes(plumes) {
     state.smokeLayerGroup.clearLayers();
     
-    plumes.forEach(plume => {
+    // Sort plumes ascending by density: Light -> Medium -> Heavy
+    // This ensures denser/heavier plumes are drawn last (on top in the DOM),
+    // receiving click/popup events first when they overlap.
+    const densityPriority = { "Light": 1, "Medium": 2, "Heavy": 3 };
+    const sortedPlumes = [...plumes].sort((a, b) => {
+        return (densityPriority[a.density] || 0) - (densityPriority[b.density] || 0);
+    });
+    
+    sortedPlumes.forEach(plume => {
         // Swap coordinate format for Leaflet: [[[lon1, lat1], [lon2, lat2], ...]] -> [[[lat1, lon1], [lat2, lon2], ...]]
         const LeafletRings = plume.rings.map(ring => {
             return ring.map(coord => [coord[1], coord[0]]);
@@ -929,7 +952,8 @@ function renderSmokePlumes(plumes) {
             weight: weight,
             fillColor: color,
             fillOpacity: opacity,
-            interactive: true
+            interactive: true,
+            pane: 'smokePane'
         });
         
         poly.bindPopup(`
@@ -942,11 +966,6 @@ function renderSmokePlumes(plumes) {
                 </div>
             </div>
         `);
-        
-        // Ensure polygons stay behind markers
-        poly.on('add', () => {
-            poly.bringToBack();
-        });
         
         state.smokeLayerGroup.addLayer(poly);
     });

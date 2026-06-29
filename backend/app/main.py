@@ -19,12 +19,20 @@ app = FastAPI(title="Utah Wildfire and Wind Tracking API")
 # Global variables
 muni_boundaries: List[Dict[str, any]] = []
 
-# Add CORS Middleware to facilitate local development/testing
+# Configure CORS dynamically based on environment configuration
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+if allowed_origins_env == "*":
+    origins = ["*"]
+    allow_creds = False  # Wildcard origins cannot combine with allow_credentials=True in modern browsers
+else:
+    origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+    allow_creds = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=origins,
+    allow_credentials=allow_creds,
+    allow_methods=["GET"],  # Restrict to GET requests as this is a read-only dashboard
     allow_headers=["*"],
 )
 
@@ -48,6 +56,7 @@ hotspots_cache: Dict[str, any] = {
     "expiry": 0.0,
     "created_at": ""
 }
+weather_cache: Dict[str, any] = {}
 CACHE_DURATION_SECS = 15 * 60
 
 def get_cardinal_direction(degrees: Optional[float]) -> str:
@@ -303,6 +312,19 @@ async def get_weather(
     On-demand weather telemetry retrieval from api.weather.gov for a given lat/lon.
     Queries up to 3 nearby NWS stations to handle outages and null observation values.
     """
+    # Evict cache entries if memory footprint grows
+    if len(weather_cache) > 1000:
+        weather_cache.clear()
+        logger.info("Evicted weather cache to manage memory footprint.")
+
+    cache_key = f"{latitude:.3f},{longitude:.3f}"
+    now = time.time()
+    if cache_key in weather_cache:
+        cached_item = weather_cache[cache_key]
+        if now < cached_item["expiry"]:
+            logger.info(f"Serving weather data for {cache_key} from in-memory cache.")
+            return cached_item["data"]
+
     headers = {"User-Agent": NWS_USER_AGENT}
     points_url = f"https://api.weather.gov/points/{latitude:.4f},{longitude:.4f}"
     
@@ -404,7 +426,7 @@ async def get_weather(
                     cardinal = get_cardinal_direction(wind_dir_deg)
                     
                     logger.info(f"Successfully retrieved telemetry from station {station_id}")
-                    return {
+                    weather_data = {
                         "station_id": station_id,
                         "station_name": station_name,
                         "wind_speed_mph": round(wind_speed_mph, 1),
@@ -416,6 +438,11 @@ async def get_weather(
                         "relative_humidity": round(relative_humidity, 1) if relative_humidity is not None else None,
                         "timestamp": properties.get("timestamp")
                     }
+                    weather_cache[cache_key] = {
+                        "data": weather_data,
+                        "expiry": now + 300  # cache for 5 minutes
+                    }
+                    return weather_data
                     
                 except Exception as ex:
                     logger.warning(f"Error querying station {station_id}: {str(ex)}")

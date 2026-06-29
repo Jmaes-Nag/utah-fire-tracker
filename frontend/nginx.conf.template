@@ -1,0 +1,28 @@
+# Define rate limit zone for API requests (10MB memory zone, 5 requests/sec)
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=5r/s;
+
+server {
+    listen 80;
+    server_name ${PRODUCTION_DOMAIN};
+
+    # HTTP Security Headers
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API Proxy with Rate Limiting (burst up to 10 requests, no delay)
+    location /api {
+        limit_req zone=api_limit burst=10 nodelay;
+        proxy_pass http://backend:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

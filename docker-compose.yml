@@ -8,6 +8,7 @@ services:
       - "8000"
     environment:
       - NWS_USER_AGENT=UtahWildfireTracker/1.0 (contact@example.com)
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
     restart: unless-stopped
 
   frontend:
@@ -15,6 +16,8 @@ services:
     container_name: utah_wildfire_frontend
     ports:
       - "8080:80"
+    environment:
+      - PRODUCTION_DOMAIN=${PRODUCTION_DOMAIN}
     depends_on:
       - backend
     restart: unless-stopped
