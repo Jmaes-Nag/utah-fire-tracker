@@ -112,6 +112,10 @@ async def get_incidents(response: Response = None):
             raise HTTPException(status_code=502, detail="Bad Gateway: NIFC API returned error status.")
             
         raw_data = response.json()
+        if "error" in raw_data:
+            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
+            logger.error(f"NIFC API returned error JSON: {error_msg}")
+            raise HTTPException(status_code=502, detail=f"Bad Gateway: NIFC API returned error: {error_msg}")
         features = raw_data.get("features", [])
         
         cleaned_incidents = []
@@ -199,6 +203,10 @@ async def get_perimeters(response: Response = None):
             raise HTTPException(status_code=502, detail="Bad Gateway: NIFC Perimeters API returned error status.")
             
         raw_data = res.json()
+        if "error" in raw_data:
+            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
+            logger.error(f"NIFC Perimeters API returned error JSON: {error_msg}")
+            raise HTTPException(status_code=502, detail=f"Bad Gateway: NIFC Perimeters API returned error: {error_msg}")
         
         # Store raw GeoJSON FeatureCollection in cache
         perimeter_cache["data"] = raw_data
@@ -260,6 +268,10 @@ async def get_hotspots(response: Response = None):
             raise HTTPException(status_code=502, detail="Failed to query NOAA Hotspots service.")
             
         raw_data = res.json()
+        if "error" in raw_data:
+            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
+            logger.error(f"NOAA Hotspots API returned error JSON: {error_msg}")
+            raise HTTPException(status_code=502, detail=f"Bad Gateway: NOAA Hotspots API returned error: {error_msg}")
         features = raw_data.get("features", [])
         
         cleaned = []
@@ -532,8 +544,11 @@ async def get_alerts():
             cap_res = await client.get(cap_url, params=cap_params)
         if cap_res.status_code == 200:
             cap_data = cap_res.json()
-            fema_alerts = cap_data.get("features", [])
-            logger.info(f"Fetched {len(fema_alerts)} active wildfire/evacuation alerts globally.")
+            if "error" not in cap_data:
+                fema_alerts = cap_data.get("features", [])
+                logger.info(f"Fetched {len(fema_alerts)} active wildfire/evacuation alerts globally.")
+            else:
+                logger.warning(f"CAP Alerts Feed returned error: {cap_data['error'].get('message')}")
     except Exception as e:
         logger.warning(f"Failed to query CAP Alerts Feed: {str(e)}")
 
@@ -773,7 +788,11 @@ async def get_smoke():
             res = await client.get(primary_url, params=params)
             
         if res.status_code == 200:
-            features = res.json().get("features", [])
+            raw_primary = res.json()
+            if "error" not in raw_primary:
+                features = raw_primary.get("features", [])
+            else:
+                logger.warning(f"Primary NOAA Smoke API returned error: {raw_primary['error'].get('message')}")
             
         # If primary failed or returned 0 features, try fallback replica
         if res.status_code != 200 or not features:
@@ -782,7 +801,11 @@ async def get_smoke():
             async with httpx.AsyncClient(timeout=15.0) as client:
                 res_fb = await client.get(fallback_url, params=params)
             if res_fb.status_code == 200:
-                features = res_fb.json().get("features", [])
+                raw_fb = res_fb.json()
+                if "error" not in raw_fb:
+                    features = raw_fb.get("features", [])
+                else:
+                    logger.warning(f"Fallback NOAA Smoke API returned error: {raw_fb['error'].get('message')}")
             else:
                 logger.error(f"Fallback NOAA Smoke API returned status {res_fb.status_code}")
                 if res.status_code != 200:
@@ -850,6 +873,10 @@ async def get_aqi():
             raise HTTPException(status_code=502, detail="Failed to query Air Quality service.")
             
         raw = res.json()
+        if "error" in raw:
+            error_msg = raw["error"].get("message", "Unknown ArcGIS error")
+            logger.error(f"Air Quality API returned error JSON: {error_msg}")
+            raise HTTPException(status_code=502, detail=f"Bad Gateway: Air Quality API returned error: {error_msg}")
         features = raw.get("features", [])
         
         normalized = []
