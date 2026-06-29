@@ -21,6 +21,9 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
     <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+    
+    <!-- Turf.js for spatial verification checks -->
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 
     <!-- Tailwind CSS v3 via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -52,7 +55,7 @@
 <body class="h-full overflow-hidden text-slate-800 dark:text-slate-100 font-sans transition-colors duration-250">
 
     <!-- 3-Panel Main Layout -->
-    <div class="grid grid-cols-[360px_1fr_380px] h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+    <div id="app-layout" class="h-full w-full overflow-hidden bg-slate-50 dark:bg-slate-950">
         
         <!-- Left Panel: Incident List -->
         <aside class="flex flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 h-full overflow-hidden shadow-2xl transition-colors duration-200">
@@ -139,8 +142,11 @@
             
             <!-- Footer -->
             <div class="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-slate-950/60 text-[10px] text-slate-500 flex justify-between items-center px-4">
-                <a href="/sources.html" class="hover:underline hover:text-brand-orange transition-colors duration-150 flex items-center gap-1"><i class="fa-solid fa-circle-info text-brand-orange"></i> Data Transparency</a>
-                <span id="cache-indicator" class="flex items-center gap-1 text-slate-400 dark:text-slate-500 font-mono"><i class="fa-solid fa-clock animate-pulse"></i> Syncing...</span>
+                <a href="/sources.html" class="hover:underline hover:text-brand-orange transition-colors duration-150 flex items-center gap-1"><i class="fa-solid fa-circle-info text-brand-orange"></i> Map Guide & Sources</a>
+                <div class="flex items-center gap-1.5 font-mono">
+                    <span id="cache-indicator" class="flex items-center gap-1 text-slate-400 dark:text-slate-500"><i class="fa-solid fa-clock animate-pulse"></i> Syncing...</span>
+                    <span class="help-tooltip-trigger cursor-pointer text-slate-400 hover:text-slate-650 dark:text-slate-500 dark:hover:text-slate-300" data-tooltip="tooltip-cache-freshness" title="Data Freshness Disclosure"><i class="fa-solid fa-circle-info"></i></span>
+                </div>
             </div>
         </aside>
         
@@ -149,8 +155,26 @@
             <!-- Map Container -->
             <div id="map" class="h-full w-full z-0"></div>
             
+            <!-- Sidebar Toggle Buttons (Floating on Map) -->
+            <button 
+                id="toggle-left-btn" 
+                title="Toggle Left Sidebar" 
+                class="absolute top-4 left-4 z-[1000] p-2.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg shadow-lg flex items-center justify-center backdrop-blur-md transition-all duration-200"
+            >
+                <i id="left-toggle-icon" class="fa-solid fa-chevron-left text-sm transition-transform duration-300"></i>
+            </button>
+            
             <!-- Map Overlay UI -->
             <div class="absolute top-4 right-4 z-[1000] flex flex-col gap-2">
+                <!-- Toggle Right Sidebar Button -->
+                <button 
+                    id="toggle-right-btn" 
+                    title="Toggle Telemetry Panel" 
+                    class="p-2.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg shadow-lg flex items-center justify-center backdrop-blur-md transition-all duration-200"
+                >
+                    <i id="right-toggle-icon" class="fa-solid fa-chevron-right text-sm transition-transform duration-300"></i>
+                </button>
+
                 <!-- Theme Toggle Button -->
                 <button 
                     id="theme-toggle-btn" 

@@ -7,13 +7,17 @@ const state = {
     activeFemaLayer: null,
     smokeLayerGroup: null,
     aqiLayerGroup: null,
+    hotspotsLayerGroup: null,
+    perimetersLayerGroup: null,
     legendControl: null,
     map: null,
     tileLayer: null,
     markersClusterGroup: null,
     markersMap: new Map(), // Maps incident.id -> Leaflet Marker
     searchQuery: "",
-    theme: localStorage.getItem("theme") || "light" // default to light
+    theme: localStorage.getItem("theme") || "light", // default to light
+    leftCollapsed: window.innerWidth < 1024,
+    rightCollapsed: window.innerWidth < 1024
 };
 
 // DOM Elements
@@ -102,6 +106,9 @@ function initMap() {
     // Load initial tiles
     updateMapTiles();
 
+    // Setup Perimeters Layer Group (so it renders underneath markers)
+    state.perimetersLayerGroup = L.layerGroup().addTo(state.map);
+
     // Setup Marker Cluster Group
     state.markersClusterGroup = L.markerClusterGroup({
         showCoverageOnHover: false,
@@ -142,10 +149,13 @@ function initMap() {
 
     // Setup Layer Groups
     state.smokeLayerGroup = L.layerGroup().addTo(state.map);
-    state.aqiLayerGroup = L.layerGroup().addTo(state.map);
+    state.aqiLayerGroup = L.layerGroup(); // Not enabled by default
+    state.hotspotsLayerGroup = L.layerGroup(); // Not enabled by default
 
     // Layer Toggle Control
     const overlayMaps = {
+        "<span class='text-xs font-semibold flex items-center gap-1.5 text-slate-700 dark:text-slate-200'><i class='fa-solid fa-draw-polygon text-slate-500'></i> Burn Perimeters</span>": state.perimetersLayerGroup,
+        "<span class='text-xs font-semibold flex items-center gap-1.5 text-slate-700 dark:text-slate-200'><i class='fa-solid fa-circle-dot text-rose-500 animate-pulse'></i> Active Heat (Hotspots)</span>": state.hotspotsLayerGroup,
         "<span class='text-xs font-semibold flex items-center gap-1.5 text-slate-700 dark:text-slate-200'><i class='fa-solid fa-smog text-amber-500'></i> Smoke Plumes</span>": state.smokeLayerGroup,
         "<span class='text-xs font-semibold flex items-center gap-1.5 text-slate-700 dark:text-slate-200'><i class='fa-solid fa-wind text-emerald-500'></i> Air Quality Index</span>": state.aqiLayerGroup
     };
@@ -243,11 +253,13 @@ async function fetchIncidents() {
     incidentCards.innerHTML = "";
 
     try {
-        const [incidentsRes, alertsRes, smokeRes, aqiRes] = await Promise.all([
+        const [incidentsRes, alertsRes, smokeRes, aqiRes, perimetersRes, hotspotsRes] = await Promise.all([
             fetch("/api/incidents"),
             fetch("/api/alerts"),
             fetch("/api/smoke"),
-            fetch("/api/aqi")
+            fetch("/api/aqi"),
+            fetch("/api/perimeters"),
+            fetch("/api/hotspots")
         ]);
         
         if (incidentsRes.status >= 400) {
@@ -297,6 +309,16 @@ async function fetchIncidents() {
             state.alerts = [];
         }
 
+        // Parse and render Burn Perimeters
+        try {
+            if (perimetersRes && perimetersRes.status < 400) {
+                const perimeters = await perimetersRes.json();
+                renderPerimeters(perimeters);
+            }
+        } catch (e) {
+            console.error("Error parsing burn perimeters:", e);
+        }
+
         // Parse and render NOAA Smoke Plumes
         try {
             if (smokeRes.status < 400) {
@@ -315,6 +337,16 @@ async function fetchIncidents() {
             }
         } catch (e) {
             console.error("Error parsing AQI stations:", e);
+        }
+        
+        // Parse and render Thermal Hotspots
+        try {
+            if (hotspotsRes.status < 400) {
+                const hotspots = await hotspotsRes.json();
+                renderHotspots(hotspots);
+            }
+        } catch (e) {
+            console.error("Error parsing hotspots:", e);
         }
         
         updateStats();
@@ -449,15 +481,20 @@ function populateMapMarkers() {
     state.markersMap.clear();
 
     state.incidents.forEach(incident => {
-        // Create custom DivIcon for pulsing dot
+        // Create custom DivIcon for flame badge
         const isLarge = incident.acres > 1000;
-        const iconHtml = `<div class="pulse-ring ${isLarge ? 'pulse-ring-large' : ''}"></div><div class="pulse-dot"></div>`;
+        const iconHtml = `
+            <div class="pulse-ring ${isLarge ? 'pulse-ring-large' : ''}"></div>
+            <div class="incident-badge ${isLarge ? 'incident-badge-large' : ''}">
+                <i class="fa-solid fa-fire text-white animate-pulse"></i>
+            </div>
+        `;
         
         const customIcon = L.divIcon({
             className: 'pulse-marker',
             html: iconHtml,
-            iconSize: [24, 24],
-            iconAnchor: [12, 12]
+            iconSize: isLarge ? [32, 32] : [24, 24],
+            iconAnchor: isLarge ? [16, 16] : [12, 12]
         });
 
         const marker = L.marker([incident.latitude, incident.longitude], { icon: customIcon });
@@ -512,6 +549,11 @@ async function selectIncidentById(id, flyToMap = true) {
         setCardActiveState(newCard, true);
         // Scroll active card into view
         newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    if (state.rightCollapsed) {
+        state.rightCollapsed = false;
+        updateSidebarLayout();
     }
 
     const incident = state.incidents.find(item => item.id === id);
@@ -814,6 +856,49 @@ function drawFemaPolygon(alert) {
     }
 }
 
+// Render Burn Perimeters on Leaflet Map
+function renderPerimeters(geojsonData) {
+    if (state.perimetersLayerGroup) {
+        state.perimetersLayerGroup.clearLayers();
+    }
+    if (!geojsonData) return;
+    
+    L.geoJSON(geojsonData, {
+        style: function (feature) {
+            return {
+                color: "#2c2c2c",      // charcoal/scorched line border
+                weight: 2,
+                fillColor: "#111111",  // darker semi-transparent inner fill
+                fillOpacity: 0.45,
+                opacity: 0.8
+            };
+        },
+        onEachFeature: function (feature, layer) {
+            const props = feature.properties || {};
+            const name = props.IncidentName || props.poly_IncidentName || props.incidentname || "Active Fire Perimeter";
+            const acres = props.FeatureAcres || props.poly_FeatureAcres || props.featureacres || "Unknown";
+            const comments = props.Comments || props.poly_Comments || "";
+            
+            let popupContent = `
+                <div class="p-1.5 text-xs font-sans max-w-[200px]">
+                    <strong class="text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-bold"><i class="fa-solid fa-draw-polygon text-slate-500"></i> Burn Perimeter</strong>
+                    <div class="mt-2 text-[10px] space-y-1 font-mono">
+                        <div>Name: <span class="font-bold text-slate-700 dark:text-slate-350">${name}</span></div>
+                        <div>Acres: <span class="text-slate-500">${acres}</span></div>
+            `;
+            if (comments) {
+                popupContent += `<div>Info: <span class="text-slate-450 text-[9px] block max-h-[60px] overflow-y-auto">${comments}</span></div>`;
+            }
+            popupContent += `
+                    </div>
+                </div>
+            `;
+            
+            layer.bindPopup(popupContent);
+        }
+    }).addTo(state.perimetersLayerGroup);
+}
+
 // Draw NOAA Smoke Plumes on Leaflet Map
 function renderSmokePlumes(plumes) {
     state.smokeLayerGroup.clearLayers();
@@ -908,6 +993,54 @@ function renderAqiStations(stations) {
     });
 }
 
+// Plot active thermal hotspots (heat detection dots) on Leaflet Map
+function renderHotspots(hotspots) {
+    state.hotspotsLayerGroup.clearLayers();
+    
+    hotspots.forEach(spot => {
+        // Style based on Fire Radiative Power (FRP)
+        let color = "#eab308"; // Low intensity (yellow)
+        let radius = 3;
+        let weight = 0.5;
+        
+        if (spot.frp >= 100) {
+            color = "#ef4444"; // Extremely intense heat (red)
+            radius = 5.5;
+            weight = 1.5;
+        } else if (spot.frp >= 10) {
+            color = "#f97316"; // Moderate heat (orange)
+            radius = 4;
+            weight = 1;
+        }
+        
+        const marker = L.circleMarker([spot.latitude, spot.longitude], {
+            radius: radius,
+            fillColor: color,
+            color: "#ffffff",
+            weight: weight,
+            opacity: 0.9,
+            fillOpacity: 0.8,
+            interactive: true
+        });
+        
+        const popupHtml = `
+            <div class="p-1.5 font-sans select-none max-w-[180px]">
+                <strong class="text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-bold"><i class="fa-solid fa-circle-dot text-rose-500 animate-pulse"></i> Thermal Hotspot</strong>
+                <p class="text-[9px] text-slate-450 dark:text-slate-500 font-medium">Satellite: ${spot.satellite} (${spot.method})</p>
+                <div class="mt-2.5 pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                    <div>
+                        <span class="text-[9px] text-slate-450 dark:text-slate-550 block">Heat Output (FRP)</span>
+                        <strong class="text-xs font-mono text-rose-500">${spot.frp.toFixed(1)} MW</strong>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        marker.bindPopup(popupHtml, { offset: [0, -1] });
+        state.hotspotsLayerGroup.addLayer(marker);
+    });
+}
+
 // Hook up search filtering
 searchInput.addEventListener("input", (e) => {
     state.searchQuery = e.target.value.toLowerCase().trim();
@@ -919,6 +1052,229 @@ searchInput.addEventListener("input", (e) => {
 
     renderIncidents();
 });
+
+// Listener for Enter key on search input (submits query for geocoding / select alert)
+searchInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+        const query = searchInput.value.trim();
+        if (query) {
+            await handleSearchSubmit(query);
+        }
+    }
+});
+
+// Helper: Convert degrees to cardinal direction in JavaScript
+function getCardinalDirectionJS(degrees) {
+    if (degrees === null || degrees === undefined) return "N/A";
+    degrees = degrees % 360;
+    const directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+    const idx = Math.round(degrees / 22.5) % 16;
+    return directions[idx];
+}
+
+// Helper: Construct Turf.js polygon representing the wind-driven risk corridor for a fire
+function getWindDrivenCorridor(incident, windSpeed, windDirDeg) {
+    const firePoint = turf.point([incident.longitude, incident.latitude]);
+    const BASE_BUFFER_MILES = 5;
+    
+    if (windSpeed && windDirDeg !== undefined && windDirDeg !== null) {
+        // Downwind direction is wind direction + 180 degrees
+        const downwindDeg = (windDirDeg + 185) % 360; // 180 vector shift
+        
+        // Shift length: wind_speed * 0.2 miles
+        const shiftMiles = windSpeed * 0.2;
+        
+        // Project the downwind shifted point
+        const shiftedPoint = turf.destination(firePoint, shiftMiles, downwindDeg, { units: 'miles' });
+        
+        // Create a corridor line and buffer it
+        const line = turf.lineString([
+            [incident.longitude, incident.latitude],
+            shiftedPoint.geometry.coordinates
+        ]);
+        
+        return turf.buffer(line, BASE_BUFFER_MILES, { units: 'miles' });
+    } else {
+        // Simple radial buffer of 5 miles if wind is calm or missing
+        return turf.buffer(firePoint, BASE_BUFFER_MILES, { units: 'miles' });
+    }
+}
+
+// Perform spatial verification loop checks
+function verifySpatialSafety(lat, lon) {
+    const pt = turf.point([lon, lat]);
+    let inFema = false;
+    let femaDetails = null;
+    let inCorridor = false;
+    let threateningFires = [];
+
+    // 1. Check active FEMA Alert zones
+    state.alerts.forEach(alert => {
+        if (alert.fema_alerts) {
+            alert.fema_alerts.forEach(fa => {
+                if (fa.rings) {
+                    try {
+                        const poly = turf.polygon(fa.rings);
+                        if (turf.booleanPointInPolygon(pt, poly)) {
+                            inFema = true;
+                            femaDetails = fa;
+                        }
+                    } catch (e) {
+                        console.error("FEMA polygon check error:", e);
+                    }
+                }
+            });
+        }
+    });
+
+    // 2. Map fire IDs to their active wind vectors
+    const fireWindMap = new Map();
+    state.alerts.forEach(alert => {
+        if (alert.fires) {
+            alert.fires.forEach(f => {
+                if (!fireWindMap.has(f.id)) {
+                    fireWindMap.set(f.id, {
+                        windSpeed: f.wind_speed_mph,
+                        windDirDeg: f.wind_direction_deg
+                    });
+                }
+            });
+        }
+    });
+
+    // 3. Check distance and corridor intersection for all active fires
+    state.incidents.forEach(incident => {
+        const windData = fireWindMap.get(incident.id) || { windSpeed: 0, windDirDeg: null };
+        try {
+            const corridor = getWindDrivenCorridor(incident, windData.windSpeed, windData.windDirDeg);
+            if (turf.booleanPointInPolygon(pt, corridor)) {
+                inCorridor = true;
+                const distance = turf.distance(pt, turf.point([incident.longitude, incident.latitude]), { units: 'miles' });
+                threateningFires.push({
+                    name: incident.name,
+                    distance: distance.toFixed(1),
+                    windSpeed: windData.windSpeed,
+                    windDir: getCardinalDirectionJS(windData.windDirDeg)
+                });
+            }
+        } catch (e) {
+            console.error("Risk corridor check error:", e);
+        }
+    });
+
+    return { inFema, femaDetails, inCorridor, threateningFires };
+}
+
+// Display geocode and safety analysis results
+function displayGeocodeResult(lat, lon, displayName, safety) {
+    let statusClass = "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20";
+    let statusText = "🟢 STATUS: SAFE ZONE";
+    let statusDesc = "This location is currently outside active FEMA alert zones and wind-driven wildfire threat corridors.";
+    
+    if (safety.inFema) {
+        statusClass = "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 animate-pulse";
+        statusText = "🔴 CRITICAL ALERT: FEMA ACTIVE ZONE";
+        statusDesc = `<strong>Event:</strong> ${safety.femaDetails.event}<br/><strong>Instruction:</strong> ${safety.femaDetails.instruction || safety.femaDetails.description || 'Follow local evacuation orders.'}`;
+    } else if (safety.inCorridor) {
+        statusClass = "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20";
+        statusText = "🟠 WARNING: RISK CORRIDOR";
+        let fireList = safety.threateningFires.map(f => `• ${f.name} (${f.distance} mi away, wind ${f.windDir} @ ${f.windSpeed} mph)`).join('<br/>');
+        statusDesc = `Location is downwind of active fires:<br/>${fireList}`;
+    }
+
+    const popupHtml = `
+        <div class="p-3 font-sans max-w-[280px]">
+            <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">📍 Search Result</h4>
+            <p class="text-[10px] text-slate-500 dark:text-slate-400 mb-2 truncate" title="${displayName}">${displayName}</p>
+            
+            <div class="p-2 border rounded-lg text-xs leading-relaxed ${statusClass}">
+                <div class="font-bold mb-1 uppercase tracking-wider text-[10px]">${statusText}</div>
+                <div class="text-[11px]">${statusDesc}</div>
+            </div>
+        </div>
+    `;
+
+    // Drop marker on Leaflet map
+    const searchMarker = L.marker([lat, lon], {
+        icon: L.divIcon({
+            className: 'search-result-marker',
+            html: '<div class="flex h-5 w-5 items-center justify-center"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75"></span><span class="relative inline-flex h-3 w-3 rounded-full bg-blue-500 border border-white"></span></div>',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        })
+    }).addTo(state.map);
+
+    searchMarker.bindPopup(popupHtml, { offset: [0, -2] }).openPopup();
+    
+    // Auto-remove marker when popup closes
+    searchMarker.on('popupclose', () => {
+        state.map.removeLayer(searchMarker);
+    });
+}
+
+// Search selection handler
+async function handleSearchSubmit(query) {
+    query = query.trim();
+    if (!query) return;
+
+    // 1. Check matches in alert city names
+    const matchedAlertIndex = state.alerts.findIndex(alert => alert.city.toLowerCase() === query.toLowerCase());
+    if (matchedAlertIndex !== -1) {
+        selectAlert(matchedAlertIndex);
+        return;
+    }
+
+    // 2. Check partial matches in alert city names
+    const partialAlertIndex = state.alerts.findIndex(alert => alert.city.toLowerCase().includes(query.toLowerCase()));
+    if (partialAlertIndex !== -1) {
+        selectAlert(partialAlertIndex);
+        return;
+    }
+
+    // 3. Check exact match in incident names
+    const matchedIncident = state.incidents.find(incident => incident.name.toLowerCase() === query.toLowerCase());
+    if (matchedIncident) {
+        selectIncidentById(matchedIncident.id);
+        return;
+    }
+
+    // 4. Check partial match in incident names
+    const partialIncident = state.incidents.find(incident => incident.name.toLowerCase().includes(query.toLowerCase()));
+    if (partialIncident) {
+        selectIncidentById(partialIncident.id);
+        return;
+    }
+
+    // 5. Query OpenStreetMap Nominatim Geocoding API
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Geocoding service unavailable");
+        
+        const data = await response.json();
+        if (data && data.length > 0) {
+            const lat = parseFloat(data[0].lat);
+            const lon = parseFloat(data[0].lon);
+            const displayName = data[0].display_name;
+            
+            // Recenter map
+            state.map.flyTo([lat, lon], 13, { duration: 1.5 });
+            
+            // Run spatial verification check
+            const safety = verifySpatialSafety(lat, lon);
+            
+            // Display safety result popup
+            setTimeout(() => {
+                displayGeocodeResult(lat, lon, displayName, safety);
+            }, 1500);
+        } else {
+            alert(`No location found for query: "${query}"`);
+        }
+    } catch (err) {
+        console.error("Geocoding failed:", err);
+        alert("Failed to connect to geocoding service. Please try again.");
+    }
+}
 
 // App Initialization entry point
 window.addEventListener("DOMContentLoaded", () => {
@@ -955,6 +1311,81 @@ function initCollapsibles() {
             incidentsCaret.classList.toggle("-rotate-90");
         });
     }
+
+    // Layout Toggle Buttons
+    const toggleLeftBtn = document.getElementById("toggle-left-btn");
+    const toggleRightBtn = document.getElementById("toggle-right-btn");
+    
+    if (toggleLeftBtn) {
+        toggleLeftBtn.addEventListener("click", () => {
+            state.leftCollapsed = !state.leftCollapsed;
+            updateSidebarLayout();
+        });
+    }
+    
+    if (toggleRightBtn) {
+        toggleRightBtn.addEventListener("click", () => {
+            state.rightCollapsed = !state.rightCollapsed;
+            updateSidebarLayout();
+        });
+    }
+
+    // Set initial sidebar states
+    updateSidebarLayout();
+
+    // Window resize tracking
+    let lastWidth = window.innerWidth;
+    window.addEventListener("resize", () => {
+        const currentWidth = window.innerWidth;
+        if (currentWidth < 1024 && lastWidth >= 1024) {
+            state.leftCollapsed = true;
+            state.rightCollapsed = true;
+            updateSidebarLayout();
+        } else if (currentWidth >= 1024 && lastWidth < 1024) {
+            state.leftCollapsed = false;
+            state.rightCollapsed = false;
+            updateSidebarLayout();
+        }
+        lastWidth = currentWidth;
+    });
+}
+
+// Update DOM elements and classes based on collapsed states
+function updateSidebarLayout() {
+    const layout = document.getElementById("app-layout");
+    const leftPanel = document.querySelector("aside");
+    const rightPanel = document.querySelector("section");
+    const leftToggleIcon = document.getElementById("left-toggle-icon");
+    const rightToggleIcon = document.getElementById("right-toggle-icon");
+    
+    if (!layout || !leftPanel || !rightPanel) return;
+
+    if (state.leftCollapsed) {
+        layout.classList.add("left-collapsed");
+        leftPanel.classList.add("collapsed");
+        if (leftToggleIcon) leftToggleIcon.className = "fa-solid fa-chevron-right text-sm transition-transform duration-300";
+    } else {
+        layout.classList.remove("left-collapsed");
+        leftPanel.classList.remove("collapsed");
+        if (leftToggleIcon) leftToggleIcon.className = "fa-solid fa-chevron-left text-sm transition-transform duration-300";
+    }
+    
+    if (state.rightCollapsed) {
+        layout.classList.add("right-collapsed");
+        rightPanel.classList.add("collapsed");
+        if (rightToggleIcon) rightToggleIcon.className = "fa-solid fa-chevron-left text-sm transition-transform duration-300";
+    } else {
+        layout.classList.remove("right-collapsed");
+        rightPanel.classList.remove("collapsed");
+        if (rightToggleIcon) rightToggleIcon.className = "fa-solid fa-chevron-right text-sm transition-transform duration-300";
+    }
+    
+    // Trigger map size invalidate after transition finishes so Leaflet redraws correctly
+    setTimeout(() => {
+        if (state.map) {
+            state.map.invalidateSize();
+        }
+    }, 300);
 }
 
 // Interactive Tooltips System
@@ -1012,6 +1443,22 @@ function initTooltips() {
                         </ul>
                     </div>
                 </div>
+            </div>
+        `,
+        "tooltip-cache-freshness": `
+            <div class="space-y-2 font-sans text-xs">
+                <h4 class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 border-b border-slate-200 dark:border-slate-800 pb-1 mb-1.5"><i class="fa-solid fa-arrows-rotate text-emerald-500"></i> Data Freshness Disclosure</h4>
+                <p class="text-[10px] text-slate-500 dark:text-slate-450 leading-normal">
+                    This tracker aggregates public telemetry from federal and state agencies, which operates on separate cache intervals:
+                </p>
+                <div class="space-y-1.5 text-[10px] leading-normal mt-1.5 text-slate-650 dark:text-slate-400">
+                    <div>• <strong>Wildfire Boundaries & Incident Logs:</strong> Cached locally for 15 minutes to preserve public API bandwidth.</div>
+                    <div>• <strong>NWS Weather Stations:</strong> Observations update every 15 to 60 minutes depending on the physical station.</div>
+                    <div>• <strong>NOAA Satellite Plumes:</strong> Updated periodically as satellite imaging tracks pass over Utah.</div>
+                </div>
+                <p class="text-[9px] text-slate-400 dark:text-slate-500 italic mt-1 leading-normal">
+                    Because of these varying source schedules, local updates do not pivot minute-by-minute.
+                </p>
             </div>
         `
     };

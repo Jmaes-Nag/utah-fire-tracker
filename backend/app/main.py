@@ -38,6 +38,16 @@ cache: Dict[str, any] = {
     "expiry": 0.0,
     "created_at": ""
 }
+perimeter_cache: Dict[str, any] = {
+    "data": None,
+    "expiry": 0.0,
+    "created_at": ""
+}
+hotspots_cache: Dict[str, any] = {
+    "data": None,
+    "expiry": 0.0,
+    "created_at": ""
+}
 CACHE_DURATION_SECS = 15 * 60
 
 def get_cardinal_direction(degrees: Optional[float]) -> str:
@@ -145,6 +155,144 @@ async def get_incidents(response: Response = None):
             logger.warning("Serving stale cached incident data due to unexpected error.")
             return cache["data"]
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@app.get("/api/perimeters")
+async def get_perimeters(response: Response = None):
+    """
+    Fetch active wildfire burn perimeters in Utah from NIFC WFIGS.
+    Uses an in-memory cache to prevent rate-limiting public services.
+    """
+    now = time.time()
+    
+    # Return cached data if still valid
+    if perimeter_cache["data"] is not None and now < perimeter_cache["expiry"]:
+        logger.info("Serving perimeter data from in-memory cache.")
+        if response:
+            response.headers["X-Data-Timestamp"] = perimeter_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
+        return perimeter_cache["data"]
+        
+    logger.info("Perimeters cache expired or empty. Fetching from NIFC WFIGS Interagency Perimeters REST API...")
+    
+    url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+    params = {
+        "where": "attr_POOState='US-UT' OR attr_POOState='UT'",
+        "outSR": "4326",
+        "f": "geojson"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.get(url, params=params)
+            
+        if res.status_code != 200:
+            logger.error(f"NIFC Perimeters API returned HTTP status {res.status_code}")
+            raise HTTPException(status_code=502, detail="Bad Gateway: NIFC Perimeters API returned error status.")
+            
+        raw_data = res.json()
+        
+        # Store raw GeoJSON FeatureCollection in cache
+        perimeter_cache["data"] = raw_data
+        perimeter_cache["expiry"] = now + CACHE_DURATION_SECS
+        perimeter_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        logger.info(f"Successfully cached perimeters from NIFC WFIGS.")
+        
+        if response:
+            response.headers["X-Data-Timestamp"] = perimeter_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
+        return raw_data
+        
+    except httpx.RequestError as e:
+        logger.exception("HTTP Request to NIFC Perimeters API failed.")
+        if perimeter_cache["data"] is not None:
+            logger.warning("Serving stale cached perimeter data due to external API outage.")
+            return perimeter_cache["data"]
+        raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to NIFC Perimeters API: {str(e)}")
+    except Exception as e:
+        logger.exception("Unexpected error fetching perimeters.")
+        if perimeter_cache["data"] is not None:
+            logger.warning("Serving stale cached perimeter data due to unexpected error.")
+            return perimeter_cache["data"]
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@app.get("/api/hotspots")
+async def get_hotspots(response: Response = None):
+    """
+    Fetch active satellite-detected thermal hotspots (MODIS/VIIRS) from NOAA HMS.
+    Filters by Utah bounding box envelope.
+    """
+    now = time.time()
+    if hotspots_cache["data"] is not None and now < hotspots_cache["expiry"]:
+        logger.info("Serving thermal hotspots data from cache.")
+        if response:
+            response.headers["X-Data-Timestamp"] = hotspots_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
+        return hotspots_cache["data"]
+        
+    logger.info("Hotspots cache expired or empty. Fetching from NOAA HMS REST API...")
+    url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Fire_Detections_(v1)/FeatureServer/0/query"
+    params = {
+        "where": "1=1",
+        "geometryType": "esriGeometryEnvelope",
+        "geometry": "-114.05,37.0,-109.05,42.0",
+        "spatialRel": "esriSpatialRelIntersects",
+        "inSR": "4326",
+        "outSR": "4326",
+        "outFields": "FID,Lon,Lat,YearDay,Time,Satellite,Method,FRP",
+        "f": "json"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.get(url, params=params)
+            
+        if res.status_code != 200:
+            logger.error(f"NOAA Hotspots API returned HTTP status {res.status_code}")
+            raise HTTPException(status_code=502, detail="Failed to query NOAA Hotspots service.")
+            
+        raw_data = res.json()
+        features = raw_data.get("features", [])
+        
+        cleaned = []
+        for feat in features:
+            attribs = feat.get("attributes", {})
+            geom = feat.get("geometry", {})
+            
+            lon = geom.get("x") or attribs.get("Lon")
+            lat = geom.get("y") or attribs.get("Lat")
+            
+            if lat is None or lon is None:
+                continue
+                
+            cleaned.append({
+                "fid": attribs.get("FID"),
+                "latitude": lat,
+                "longitude": lon,
+                "satellite": attribs.get("Satellite", "Unknown"),
+                "method": attribs.get("Method", "Unknown"),
+                "frp": attribs.get("FRP", 0.0),
+                "time": attribs.get("Time", ""),
+                "yearday": attribs.get("YearDay", "")
+            })
+            
+        hotspots_cache["data"] = cleaned
+        hotspots_cache["expiry"] = now + CACHE_DURATION_SECS
+        hotspots_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        logger.info(f"Successfully cached {len(cleaned)} hotspots.")
+        
+        if response:
+            response.headers["X-Data-Timestamp"] = hotspots_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
+            
+        return cleaned
+    except Exception as e:
+        logger.exception("Error fetching hotspots.")
+        if hotspots_cache["data"] is not None:
+            logger.warning("Serving stale cached hotspots.")
+            return hotspots_cache["data"]
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/weather")
 async def get_weather(
@@ -455,7 +603,8 @@ async def get_alerts():
                             "id": fire_id,
                             "distance_miles": round(dist_miles, 1),
                             "wind_speed_mph": wind_speed_mph,
-                            "wind_direction": wind_cardinal
+                            "wind_direction": wind_cardinal,
+                            "wind_direction_deg": wind_dir_deg
                         })
                 else:
                     alerts[muni_name] = {
@@ -470,7 +619,8 @@ async def get_alerts():
                             "id": fire_id,
                             "distance_miles": round(dist_miles, 1),
                             "wind_speed_mph": wind_speed_mph,
-                            "wind_direction": wind_cardinal
+                            "wind_direction": wind_cardinal,
+                            "wind_direction_deg": wind_dir_deg
                         }],
                         "fema_alerts": []
                     }
@@ -572,7 +722,9 @@ async def get_smoke():
         logger.info("Serving smoke plume data from cache.")
         return smoke_cache["data"]
         
-    url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query"
+    primary_url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query"
+    fallback_url = "https://services2.arcgis.com/r6iFVcMJeA4kB4GC/arcgis/rest/services/NOAA_HMS_Smoke_Detection_Replica/FeatureServer/0/query"
+    
     params = {
         "where": "1=1",
         "geometryType": "esriGeometryEnvelope",
@@ -584,15 +736,31 @@ async def get_smoke():
         "f": "json"
     }
     
+    features = []
+    source_used = "primary"
+    
     try:
+        # Try primary URL first
+        logger.info("Fetching smoke plumes from primary NOAA service...")
         async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.get(url, params=params)
-        if res.status_code != 200:
-            logger.error(f"NOAA Smoke API returned HTTP status {res.status_code}")
-            raise HTTPException(status_code=502, detail="Failed to query NOAA Smoke Plume service.")
+            res = await client.get(primary_url, params=params)
             
-        raw = res.json()
-        features = raw.get("features", [])
+        if res.status_code == 200:
+            features = res.json().get("features", [])
+            
+        # If primary failed or returned 0 features, try fallback replica
+        if res.status_code != 200 or not features:
+            logger.info("Primary NOAA service returned empty or error. Trying fallback replica service...")
+            source_used = "fallback"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res_fb = await client.get(fallback_url, params=params)
+            if res_fb.status_code == 200:
+                features = res_fb.json().get("features", [])
+            else:
+                logger.error(f"Fallback NOAA Smoke API returned status {res_fb.status_code}")
+                if res.status_code != 200:
+                    # If both failed, raise error
+                    raise HTTPException(status_code=502, detail="Failed to query NOAA Smoke Plume service and fallback.")
         
         normalized = []
         for feat in features:
@@ -602,7 +770,7 @@ async def get_smoke():
                 continue
                 
             normalized.append({
-                "fid": attribs.get("FID"),
+                "fid": attribs.get("FID") or attribs.get("OBJECTID"),
                 "satellite": attribs.get("Satellite"),
                 "start": attribs.get("Start"),
                 "end": attribs.get("End_"),
@@ -612,13 +780,15 @@ async def get_smoke():
             
         smoke_cache["data"] = normalized
         smoke_cache["expiry"] = now + CACHE_DURATION_SECS
-        logger.info(f"Successfully cached {len(normalized)} smoke plumes intersecting Utah.")
+        logger.info(f"Successfully cached {len(normalized)} smoke plumes intersecting Utah using {source_used} source.")
         return normalized
     except Exception as e:
         logger.exception("Error fetching smoke plume data.")
         if smoke_cache["data"] is not None:
             logger.warning("Serving stale cached smoke data.")
             return smoke_cache["data"]
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/aqi")
