@@ -324,7 +324,11 @@ async def get_weather(
     On-demand weather telemetry retrieval from api.weather.gov for a given lat/lon.
     Queries up to 3 nearby NWS stations to handle outages and null observation values.
     """
-    # Evict cache entries if memory footprint grows
+    # Enforce geographic bounding box boundary validation (Utah region + buffer)
+    if not (35.0 <= latitude <= 45.0) or not (-116.0 <= longitude <= -107.0):
+        raise HTTPException(status_code=400, detail="Coordinates must be within or near the Utah region boundary.")
+
+    # Evict oldest cache entries if memory footprint grows to prevent memory exhaustion DoS
     if len(weather_cache) > 1000:
         weather_cache.clear()
         logger.info("Evicted weather cache to manage memory footprint.")
