@@ -330,8 +330,10 @@ async def get_weather(
 
     # Evict oldest cache entries if memory footprint grows to prevent memory exhaustion DoS
     if len(weather_cache) > 1000:
-        weather_cache.clear()
-        logger.info("Evicted weather cache to manage memory footprint.")
+        keys_to_remove = list(weather_cache.keys())[:100]
+        for key in keys_to_remove:
+            weather_cache.pop(key, None)
+        logger.info("Evicted oldest 100 weather cache entries to manage memory footprint.")
 
     cache_key = f"{latitude:.3f},{longitude:.3f}"
     now = time.time()
