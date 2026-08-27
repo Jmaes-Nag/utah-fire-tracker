@@ -87,9 +87,12 @@ function updateMapTiles() {
     }
     
     // Choose CartoDB Dark Matter or Positron (light mode)
+    const cartoApiKey = '__CARTO_API_KEY__';
+    const apiKeyParam = (cartoApiKey && cartoApiKey !== '__CARTO_API_KEY__') ? `?api_key=${cartoApiKey}` : '';
+    
     const url = state.theme === "dark" 
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-        : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+        ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png${apiKeyParam}`
+        : `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${apiKeyParam}`;
         
     state.tileLayer = L.tileLayer(url, {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
