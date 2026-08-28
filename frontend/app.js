@@ -88,7 +88,8 @@ function updateMapTiles() {
     
     // Choose CartoDB Dark Matter or Positron (light mode)
     const cartoApiKey = '__CARTO_API_KEY__';
-    const apiKeyParam = (cartoApiKey && cartoApiKey !== '__CARTO_API_KEY__') ? `?api_key=${cartoApiKey}` : '';
+    // Check that it doesn't start with the placeholder syntax so `sed` doesn't break our condition
+    const apiKeyParam = (cartoApiKey && !cartoApiKey.startsWith('__CARTO')) ? `?api_key=${cartoApiKey}` : '';
     
     const url = state.theme === "dark" 
         ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png${apiKeyParam}`
