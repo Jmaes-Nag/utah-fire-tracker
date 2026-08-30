@@ -598,6 +598,9 @@ async function selectIncidentById(id, flyToMap = true) {
 
     if (state.rightCollapsed) {
         state.rightCollapsed = false;
+        if (window.innerWidth < 1024) {
+            state.leftCollapsed = true;
+        }
         updateSidebarLayout();
     }
 
@@ -1368,6 +1371,9 @@ function initCollapsibles() {
     if (toggleLeftBtn) {
         toggleLeftBtn.addEventListener("click", () => {
             state.leftCollapsed = !state.leftCollapsed;
+            if (!state.leftCollapsed && window.innerWidth < 1024) {
+                state.rightCollapsed = true;
+            }
             updateSidebarLayout();
         });
     }
@@ -1375,6 +1381,9 @@ function initCollapsibles() {
     if (toggleRightBtn) {
         toggleRightBtn.addEventListener("click", () => {
             state.rightCollapsed = !state.rightCollapsed;
+            if (!state.rightCollapsed && window.innerWidth < 1024) {
+                state.leftCollapsed = true;
+            }
             updateSidebarLayout();
         });
     }
@@ -1402,8 +1411,8 @@ function initCollapsibles() {
 // Update DOM elements and classes based on collapsed states
 function updateSidebarLayout() {
     const layout = document.getElementById("app-layout");
-    const leftPanel = document.querySelector("aside");
-    const rightPanel = document.querySelector("section");
+    const leftPanel = document.getElementById("left-panel");
+    const rightPanel = document.getElementById("right-panel");
     const leftToggleIcon = document.getElementById("left-toggle-icon");
     const rightToggleIcon = document.getElementById("right-toggle-icon");
     

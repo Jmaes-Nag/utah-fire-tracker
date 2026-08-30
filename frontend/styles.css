@@ -375,16 +375,16 @@ aside, section {
 }
 
 aside.collapsed {
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
     border-right-color: transparent !important;
 }
 
 section.collapsed {
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
     border-left-color: transparent !important;
 }
 
@@ -413,9 +413,9 @@ section.collapsed {
     }
     
     aside.collapsed {
-        transform: translateX(-100%);
-        opacity: 0;
-        visibility: hidden;
+        transform: translateX(-100%) !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
     }
     
     section {
@@ -425,9 +425,9 @@ section.collapsed {
     }
     
     section.collapsed {
-        transform: translateX(100%);
-        opacity: 0;
-        visibility: hidden;
+        transform: translateX(100%) !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
     }
 }
 
