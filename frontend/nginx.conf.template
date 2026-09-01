@@ -12,6 +12,14 @@ server {
     listen 80;
     server_name ${PRODUCTION_DOMAIN};
 
+    # Enable gzip for text/json/JS/CSS assets and proxied API responses.
+    # The 1.9MB burn-perimeters GeoJSON drops ~3x (662KB) with this alone.
+    gzip on;
+    gzip_types application/json application/javascript text/plain text/css text/javascript application/xml;
+    gzip_min_length 256;
+    gzip_vary on;
+    gzip_proxied any;
+
     # Carto API key (injected server-side by envsubst at container startup).
     # The key never leaves the server: it is added to the tile request only here.
     set $carto_api_key "${CARTO_API_KEY}";
