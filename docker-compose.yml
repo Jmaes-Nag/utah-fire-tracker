@@ -17,8 +17,8 @@ services:
     ports:
       - "8080:80"
     environment:
-      - PRODUCTION_DOMAIN=${PRODUCTION_DOMAIN}
-      - CARTO_API_KEY=${CARTO_API_KEY}
+      - PRODUCTION_DOMAIN=${PRODUCTION_DOMAIN:-_}
+      - CARTO_API_KEY=${CARTO_API_KEY:-}
     depends_on:
       - backend
     restart: unless-stopped
