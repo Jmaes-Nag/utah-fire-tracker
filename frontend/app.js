@@ -828,8 +828,8 @@ function selectAlert(index) {
     setTimeout(() => {
         let popupHtml = `
             <div class="p-2 font-sans select-none max-w-[260px]">
-                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">🚨 ${alert.city}</h4>
-                <p class="text-xs text-slate-500 dark:text-slate-400 mb-2 font-semibold">Threat Level: <span class="${alert.risk_level === 2 ? 'text-brand-red font-extrabold' : 'text-brand-amber font-bold'}">${alert.risk_level_text}</span></p>
+                <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">🚨 ${escapeHtml(alert.city)}</h4>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mb-2 font-semibold">Threat Level: <span class="${alert.risk_level === 2 ? 'text-brand-red font-extrabold' : 'text-brand-amber font-bold'}">${escapeHtml(alert.risk_level_text)}</span></p>
         `;
         
         if (alert.fires.length > 0) {
@@ -840,8 +840,8 @@ function selectAlert(index) {
             alert.fires.forEach(f => {
                 popupHtml += `
                     <p class="text-xs text-slate-650 dark:text-slate-350 flex justify-between font-mono my-0.5">
-                        <span>🔥 ${f.name}</span>
-                        <span>${f.distance_miles} mi away</span>
+                        <span>🔥 ${escapeHtml(f.name)}</span>
+                        <span>${escapeHtml(f.distance_miles)} mi away</span>
                     </p>
                 `;
             });
