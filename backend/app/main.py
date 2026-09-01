@@ -182,12 +182,20 @@ async def get_incidents(response: Response = None):
         # Fallback to stale cache if NIFC is down
         if cache["data"] is not None:
             logger.warning("Serving stale cached incident data due to external API outage.")
+            if response:
+                response.headers["X-Data-Timestamp"] = cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return cache["data"]
         raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to NIFC API: {str(e)}")
     except Exception as e:
         logger.exception("Unexpected error fetching incidents.")
         if cache["data"] is not None:
             logger.warning("Serving stale cached incident data due to unexpected error.")
+            if response:
+                response.headers["X-Data-Timestamp"] = cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return cache["data"]
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
@@ -245,12 +253,20 @@ async def get_perimeters(response: Response = None):
         logger.exception("HTTP Request to NIFC Perimeters API failed.")
         if perimeter_cache["data"] is not None:
             logger.warning("Serving stale cached perimeter data due to external API outage.")
+            if response:
+                response.headers["X-Data-Timestamp"] = perimeter_cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return perimeter_cache["data"]
         raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to NIFC Perimeters API: {str(e)}")
     except Exception as e:
         logger.exception("Unexpected error fetching perimeters.")
         if perimeter_cache["data"] is not None:
             logger.warning("Serving stale cached perimeter data due to unexpected error.")
+            if response:
+                response.headers["X-Data-Timestamp"] = perimeter_cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return perimeter_cache["data"]
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
@@ -332,6 +348,10 @@ async def get_hotspots(response: Response = None):
         logger.exception("Error fetching hotspots.")
         if hotspots_cache["data"] is not None:
             logger.warning("Serving stale cached hotspots.")
+            if response:
+                response.headers["X-Data-Timestamp"] = hotspots_cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return hotspots_cache["data"]
         if isinstance(e, HTTPException):
             raise e
@@ -789,11 +809,13 @@ async def get_alerts():
 # Caches for smoke and air quality
 smoke_cache: Dict[str, any] = {
     "data": None,
-    "expiry": 0.0
+    "expiry": 0.0,
+    "created_at": ""
 }
 aqi_cache: Dict[str, any] = {
     "data": None,
-    "expiry": 0.0
+    "expiry": 0.0,
+    "created_at": ""
 }
 
 def calculate_pm25_aqi(pm25: float) -> int:
@@ -825,7 +847,7 @@ def calculate_pm25_aqi(pm25: float) -> int:
         return int(round(min(val, 500.0)))
 
 @app.get("/api/smoke")
-async def get_smoke():
+async def get_smoke(response: Response = None):
     """
     Fetch active smoke plume polygons from NOAA HMS Smoke Detection layer.
     Filters by Utah bounding box envelope.
@@ -833,6 +855,9 @@ async def get_smoke():
     now = time.time()
     if smoke_cache["data"] is not None and now < smoke_cache["expiry"]:
         logger.info("Serving smoke plume data from cache.")
+        if response:
+            response.headers["X-Data-Timestamp"] = smoke_cache.get("created_at", "")
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
         return smoke_cache["data"]
         
     primary_url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query"
@@ -901,19 +926,27 @@ async def get_smoke():
             
         smoke_cache["data"] = normalized
         smoke_cache["expiry"] = now + CACHE_DURATION_SECS
+        smoke_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
         logger.info(f"Successfully cached {len(normalized)} smoke plumes intersecting Utah using {source_used} source.")
+        if response:
+            response.headers["X-Data-Timestamp"] = smoke_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
         return normalized
     except Exception as e:
         logger.exception("Error fetching smoke plume data.")
         if smoke_cache["data"] is not None:
             logger.warning("Serving stale cached smoke data.")
+            if response:
+                response.headers["X-Data-Timestamp"] = smoke_cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return smoke_cache["data"]
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/aqi")
-async def get_aqi():
+async def get_aqi(response: Response = None):
     """
     Fetch live PM2.5 measurements from government monitoring stations.
     Maps concentrations to EPA AQI values and health tiers.
@@ -922,6 +955,9 @@ async def get_aqi():
     now = time.time()
     if aqi_cache["data"] is not None and now < aqi_cache["expiry"]:
         logger.info("Serving air quality data from cache.")
+        if response:
+            response.headers["X-Data-Timestamp"] = aqi_cache.get("created_at", "")
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
         return aqi_cache["data"]
         
     url = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Air_Quality_PM25_Latest_Results/FeatureServer/0/query"
@@ -996,12 +1032,20 @@ async def get_aqi():
             
         aqi_cache["data"] = normalized
         aqi_cache["expiry"] = now + CACHE_DURATION_SECS
+        aqi_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
         logger.info(f"Successfully cached {len(normalized)} Utah AQI monitoring stations.")
+        if response:
+            response.headers["X-Data-Timestamp"] = aqi_cache["created_at"]
+            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
         return normalized
     except Exception as e:
         logger.exception("Error fetching air quality data.")
         if aqi_cache["data"] is not None:
             logger.warning("Serving stale cached air quality data.")
+            if response:
+                response.headers["X-Data-Timestamp"] = aqi_cache.get("created_at", "")
+                response.headers["X-Data-Stale"] = "true"
+                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
             return aqi_cache["data"]
         raise HTTPException(status_code=500, detail=str(e))
 
