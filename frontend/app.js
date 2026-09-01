@@ -297,39 +297,37 @@ async function fetchIncidents() {
         
         // Read Cache Sync Time from Response Headers
         const syncTimestamp = incidentsRes.headers.get("X-Data-Timestamp");
+        const stale = incidentsRes.headers.get("X-Data-Stale") === "true";
+        const indicatorEl = document.getElementById("cache-indicator");
         if (syncTimestamp) {
-            try {
-                const date = new Date(syncTimestamp);
-                if (!isNaN(date.getTime())) {
-                    const localFormatted = date.toLocaleString(undefined, {
-                        year: 'numeric',
-                        month: '2-digit',
-                        day: '2-digit',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit',
-                        hour12: true
-                    });
-                    document.getElementById("cache-indicator").innerHTML = `<i class="fa-solid fa-arrows-rotate text-emerald-500 animate-pulse"></i> Sync: ${localFormatted}`;
-                } else {
-                    document.getElementById("cache-indicator").innerHTML = `<i class="fa-solid fa-arrows-rotate text-emerald-500 animate-pulse"></i> Sync: ${syncTimestamp}`;
-                }
-            } catch (e) {
-                console.error("Error formatting sync time:", e);
-                document.getElementById("cache-indicator").innerHTML = `<i class="fa-solid fa-arrows-rotate text-emerald-500 animate-pulse"></i> Sync: ${syncTimestamp}`;
+            const date = new Date(syncTimestamp);
+            const localFormatted = !isNaN(date.getTime()) ? date.toLocaleString(undefined, {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }) : syncTimestamp;
+            if (stale) {
+                // Backend is serving an older cached snapshot (upstream outage).
+                indicatorEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-500"></i> Stale: ${localFormatted}`;
+                indicatorEl.title = "One or more upstream feeds are unreachable — showing the last cached snapshot. This data may be older than 15 minutes (incidents feed).";
+            } else {
+                indicatorEl.innerHTML = `<i class="fa-solid fa-arrows-rotate text-emerald-500 animate-pulse"></i> Sync: ${localFormatted}`;
+                indicatorEl.title = "Timestamp of backend NIFC API cache synchronization (local time) — incidents feed.";
             }
-            document.getElementById("cache-indicator").title = "Timestamp of backend NIFC API cache synchronization (local time)";
         } else {
-            document.getElementById("cache-indicator").innerHTML = `<i class="fa-solid fa-check text-emerald-500"></i> Up-to-date`;
+            // No sync header: data was just fetched (no cache) or header unavailable.
+            indicatorEl.innerHTML = `<i class="fa-solid fa-check text-emerald-500"></i> Up-to-date`;
+            indicatorEl.title = "Incidents feed fetched directly; no cache sync time reported.";
         }
         
         // Display partial feed failures if any occurred
-        if (failedFeeds.length > 0) {
-            const indicatorEl = document.getElementById("cache-indicator");
-            if (indicatorEl) {
-                indicatorEl.innerHTML = `<span class="text-rose-500 font-bold hover:underline flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Feed Outage (${failedFeeds.length})</span>`;
-                indicatorEl.title = `The following services are currently experiencing issues: ${failedFeeds.join(", ")}. Using offline backup caches where available.`;
-            }
+        if (failedFeeds.length > 0 && typeof indicatorEl !== "undefined") {
+            indicatorEl.innerHTML = `<span class="text-rose-500 font-bold hover:underline flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Feed Outage (${failedFeeds.length})</span>`;
+            indicatorEl.title = `The following services are currently experiencing issues: ${failedFeeds.join(", ")}. Using offline backup caches where available.`;
         }
         
         try {
