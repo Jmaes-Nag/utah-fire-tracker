@@ -3,6 +3,7 @@ import time
 import logging
 import math
 import json
+import asyncio
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -73,6 +74,11 @@ hotspots_cache: Dict[str, any] = {
     "created_at": ""
 }
 weather_cache: Dict[str, any] = {}
+
+alerts_cache: Dict[str, any] = {
+    "data": None,
+    "expiry": 0.0
+}
 CACHE_DURATION_SECS = 15 * 60
 
 def get_cardinal_direction(degrees: Optional[float]) -> str:
@@ -555,6 +561,13 @@ async def get_alerts():
     and intersects them with Utah municipal boundary polygons.
     Also queries active FEMA CAP Alerts and overlays them onto the risk queue.
     """
+    # Serve from cache if fresh. The alerts engine is expensive (per-fire weather
+    # lookups + polygon overlay), so cache it the same 15 min as other feeds.
+    now = time.time()
+    if alerts_cache["data"] is not None and now < alerts_cache["expiry"]:
+        logger.info("Serving alerts from cache.")
+        return alerts_cache["data"]
+
     # 1. Fetch active fires (making use of cache)
     try:
         incidents = await get_incidents()
@@ -610,8 +623,33 @@ async def get_alerts():
     # 3. Perform spatial overlay for each incident
     DEG_PER_MILE = 0.0145
     BASE_BUFFER_DEG = 5.0 * DEG_PER_MILE  # 5 miles base safety buffer
-    
-    for incident in incidents:
+
+    # Pre-fetch wind telemetry for all fires CONCURRENTLY (a single fire used to
+    # block up to ~10s doing serial NWS lookups; with 20 fires that was minutes).
+    # Each call is individually time-capped so one slow NWS response can't stall
+    # the whole alerts computation.
+    async def safe_get_weather(lat, lon):
+        try:
+            return await asyncio.wait_for(
+                get_weather(latitude=lat, longitude=lon), timeout=12.0)
+        except Exception:
+            return None
+
+    weather_tasks = [
+        safe_get_weather(inc["latitude"], inc["longitude"])
+        for inc in incidents
+        if inc.get("latitude") is not None and inc.get("longitude") is not None
+    ]
+    weather_results = await asyncio.gather(*weather_tasks)
+    weather_by_idx = {}
+    wi = 0
+    for idx, inc in enumerate(incidents):
+        if inc.get("latitude") is None or inc.get("longitude") is None:
+            continue
+        weather_by_idx[idx] = weather_results[wi]
+        wi += 1
+
+    for idx, incident in enumerate(incidents):
         fire_lat = incident.get("latitude")
         fire_lon = incident.get("longitude")
         fire_name = incident.get("name")
@@ -620,18 +658,15 @@ async def get_alerts():
         if fire_lat is None or fire_lon is None:
             continue
             
-        # Get wind telemetry for this fire coordinates
+        # Use pre-fetched (parallel) wind telemetry for this fire
         wind_speed_mph = 0.0
         wind_dir_deg = None
         wind_cardinal = "N/A"
-        try:
-            weather = await get_weather(latitude=fire_lat, longitude=fire_lon)
+        weather = weather_by_idx.get(idx)
+        if weather is not None:
             wind_speed_mph = weather.get("wind_speed_mph", 0.0)
             wind_dir_deg = weather.get("wind_direction_deg")
             wind_cardinal = weather.get("wind_direction_cardinal", "N/A")
-        except Exception as e:
-            logger.warning(f"Could not retrieve wind for {fire_name}: {str(e)}")
-            
         fire_point = Point(fire_lon, fire_lat)
         
         # Calculate wind directional shift (downwind heading = wind heading + 180)
@@ -747,6 +782,8 @@ async def get_alerts():
         return (-level, min_dist)
         
     alerts_list.sort(key=get_sort_key)
+    alerts_cache["data"] = alerts_list
+    alerts_cache["expiry"] = time.time() + CACHE_DURATION_SECS
     return alerts_list
 
 # Caches for smoke and air quality
