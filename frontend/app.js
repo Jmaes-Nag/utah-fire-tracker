@@ -855,8 +855,8 @@ function selectAlert(index) {
             `;
             alert.fema_alerts.forEach(fa => {
                 popupHtml += `
-                    <p class="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">${fa.event}</p>
-                    <p class="text-[10px] text-slate-550 dark:text-slate-400 leading-normal mt-0.5 max-h-[80px] overflow-y-auto custom-scrollbar">${fa.instruction || fa.description || ''}</p>
+                    <p class="text-xs font-bold text-slate-700 dark:text-slate-200 mt-0.5">${escapeHtml(fa.event)}</p>
+                    <p class="text-[10px] text-slate-550 dark:text-slate-400 leading-normal mt-0.5 max-h-[80px] overflow-y-auto custom-scrollbar">${escapeHtml(fa.instruction || fa.description || '')}</p>
                 `;
             });
             popupHtml += `</div>`;
