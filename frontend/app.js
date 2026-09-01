@@ -86,14 +86,12 @@ function updateMapTiles() {
         state.map.removeLayer(state.tileLayer);
     }
     
-    // Choose CartoDB Dark Matter or Positron (light mode)
-    const cartoApiKey = '__CARTO_API_KEY__';
-    // Check that it doesn't start with the placeholder syntax so `sed` doesn't break our condition
-    const apiKeyParam = (cartoApiKey && !cartoApiKey.startsWith('__CARTO')) ? `?key=${encodeURIComponent(cartoApiKey)}` : '';
-    
-    const url = state.theme === "dark" 
-        ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png${apiKeyParam}`
-        : `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${apiKeyParam}`;
+    // Choose CartoDB Dark Matter or Positron (light mode). Tiles are
+    // reverse-proxied through nginx (see nginx.conf.template) so any Carto API
+    // key stays server-side and is never exposed to the browser or in logs.
+    const url = state.theme === "dark"
+        ? `/tiles/dark_all/{s}/{z}/{x}/{y}{r}.png`
+        : `/tiles/light_all/{s}/{z}/{x}/{y}{r}.png`;
         
     state.tileLayer = L.tileLayer(url, {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
