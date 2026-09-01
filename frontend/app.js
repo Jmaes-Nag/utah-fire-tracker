@@ -31,6 +31,22 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+// Format NOAA HMS smoke-plume timestamps like "2026244 1200"
+// (YYYY + Julian day + HHMM UTC) into a human-readable local time.
+// Falls back to the raw value if the shape doesn't match.
+function formatPlumeTime(value) {
+    const s = String(value ?? '').trim();
+    const m = s.match(/^(\d{4})(\d{3}) (\d{2})(\d{2})$/);
+    if (!m) return value === null || value === undefined ? '' : String(value);
+    const [, year, jday, hh, mm] = m;
+    const date = new Date(Date.UTC(+year, 0, +jday, +hh, +mm));
+    if (isNaN(date.getTime())) return String(value);
+    return date.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: true
+    });
+}
+
 // DOM Elements
 const searchInput = document.getElementById("search-input");
 const statTotalFires = document.getElementById("stat-total-fires");
@@ -991,7 +1007,7 @@ function renderSmokePlumes(plumes) {
                 <div class="mt-2 text-[10px] space-y-1 font-mono">
                     <div>Density: <span class="font-bold text-slate-700 dark:text-slate-350">${escapeHtml(plume.density)}</span></div>
                     <div>Source: <span class="text-slate-500">${escapeHtml(plume.satellite)}</span></div>
-                    <div>Observed: <span class="text-slate-500">${escapeHtml(plume.start)} UTC</span></div>
+                    <div>Observed: <span class="text-slate-500">${escapeHtml(formatPlumeTime(plume.start))} (local)</span></div>
                 </div>
             </div>
         `);
