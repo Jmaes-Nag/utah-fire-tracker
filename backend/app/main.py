@@ -4,6 +4,7 @@ import logging
 import math
 import json
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -39,6 +40,21 @@ app.add_middleware(
 # Configuration & Cache Setup
 NWS_USER_AGENT = os.getenv("NWS_USER_AGENT", "UtahWildfireTracker/1.0 (contact@example.com)")
 NIFC_API_URL = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
+
+# Only these hosts may be fetched server-side as part of NWS weather lookups.
+# Prevents SSRF if a compromised/spoofed upstream response points to an
+# arbitrary URL (e.g. cloud metadata endpoints or internal addresses).
+ALLOWED_NWS_HOSTS = {"api.weather.gov"}
+
+
+def is_allowed_nws_url(url: Optional[str]) -> bool:
+    """Return True only for https URLs on an allowlisted NWS host."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    return parsed.hostname in ALLOWED_NWS_HOSTS
 
 # 15-minute in-memory cache
 cache: Dict[str, any] = {
@@ -346,7 +362,9 @@ async def get_weather(
     headers = {"User-Agent": NWS_USER_AGENT}
     points_url = f"https://api.weather.gov/points/{latitude:.4f},{longitude:.4f}"
     
-    async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
+    # follow_redirects disabled: the upstream response supplies some URLs, and we
+    # do not want a redirect to escape the NWS host allowlist (SSRF defense).
+    async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=False) as client:
         try:
             # 1. Retrieve the point grid information to get the stations endpoint
             logger.info(f"Querying NWS points endpoint: {points_url}")
@@ -361,6 +379,10 @@ async def get_weather(
             
             if not stations_url:
                 raise HTTPException(status_code=502, detail="No weather observation stations link returned by api.weather.gov.")
+                
+            if not is_allowed_nws_url(stations_url):
+                logger.warning(f"Blocking disallowed NWS stations URL: {stations_url!r}")
+                raise HTTPException(status_code=502, detail="Weather service returned an unexpected observation stations link.")
                 
             # 2. Get list of nearby stations
             logger.info(f"Querying NWS stations list: {stations_url}")
@@ -385,6 +407,12 @@ async def get_weather(
                 station_name = station_props.get("name", "Unknown Station")
                 
                 if not station_id:
+                    continue
+                
+                # Refuse non-alphanumeric station identifiers to prevent path
+                # traversal / credential injection in the stations URL.
+                if not station_id.isalnum():
+                    logger.warning(f"Skipping station with non-alphanumeric identifier: {station_id!r}")
                     continue
                     
                 obs_url = f"https://api.weather.gov/stations/{station_id}/observations/latest"
