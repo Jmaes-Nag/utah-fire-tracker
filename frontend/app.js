@@ -3,6 +3,7 @@ const state = {
     incidents: [],
     filteredIncidents: [],
     activeIncidentId: null,
+    activeAlert: null,
     alerts: [],
     activeFemaLayer: null,
     smokeLayerGroup: null,
@@ -15,10 +16,143 @@ const state = {
     markersClusterGroup: null,
     markersMap: new Map(), // Maps incident.id -> Leaflet Marker
     searchQuery: "",
-    theme: localStorage.getItem("theme") || "light", // default to light
+    theme: readTheme(),
+    feeds: new Map(),
+    refreshId: 0,
+    weatherRequestId: 0,
+    weatherController: null,
+    selectionId: 0,
     leftCollapsed: window.innerWidth < 1024,
     rightCollapsed: window.innerWidth < 1024
 };
+
+function readTheme() {
+    try { return localStorage.getItem("theme") === "dark" ? "dark" : "light"; }
+    catch { return "light"; }
+}
+
+function numberOrNull(value, min = -Infinity, max = Infinity) {
+    if (typeof value !== 'number' && typeof value !== 'string') return null;
+    if (typeof value === 'string' && !value.trim()) return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= min && number <= max ? number : null;
+}
+
+function textOr(value, fallback = '') {
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback;
+}
+
+function validCoordinates(lat, lon) {
+    return numberOrNull(lat, -90, 90) !== null && numberOrNull(lon, -180, 180) !== null;
+}
+
+function validDate(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function validRings(rings) {
+    return Array.isArray(rings) && rings.length > 0 && rings.every(ring =>
+        Array.isArray(ring) && ring.length >= 4 && ring.every(coord =>
+            Array.isArray(coord) && validCoordinates(coord[1], coord[0])) &&
+        Number(ring[0][0]) === Number(ring[ring.length - 1][0]) &&
+        Number(ring[0][1]) === Number(ring[ring.length - 1][1]));
+}
+
+// Validate each upstream record before it can reach HTML, arithmetic or Leaflet.
+function normalizeRecords(data, normalize) {
+    if (!Array.isArray(data)) throw new Error('Expected an array');
+    const records = data.map(item => item && typeof item === 'object' && !Array.isArray(item) ? normalize(item) : null).filter(Boolean);
+    if (data.length && !records.length) throw new Error('No valid records in response');
+    return { data: records, degraded: records.length !== data.length };
+}
+
+function normalizeIncidents(data) {
+    const ids = new Set();
+    const result = normalizeRecords(data, item => {
+        const id = textOr(item.id);
+        if (!id || ids.has(id)) return null;
+        ids.add(id);
+        return { ...item, id, name: textOr(item.name, 'Unknown Wildfire'),
+            county: textOr(item.county, 'Unknown'), cause: textOr(item.cause, 'Undetermined'),
+            acres: numberOrNull(item.acres, 0), containment: numberOrNull(item.containment, 0, 100),
+            latitude: numberOrNull(item.latitude, -90, 90), longitude: numberOrNull(item.longitude, -180, 180),
+            discovered: validDate(item.discovered)?.getTime() ?? null };
+    });
+    result.degraded ||= result.data.some(item => !validCoordinates(item.latitude, item.longitude));
+    return result;
+}
+
+function normalizeAlerts(data) {
+    const result = normalizeRecords(data, item => {
+        if (!Array.isArray(item.centroid) || !validCoordinates(...item.centroid)) return null;
+        return { ...item, city: textOr(item.city, 'Unknown location'),
+            centroid: item.centroid.slice(0, 2).map(Number), risk_level: numberOrNull(item.risk_level),
+            fires: Array.isArray(item.fires) ? item.fires.filter(f => f && typeof f === 'object').map(f => ({
+                ...f, id: textOr(f.id), wind_speed_mph: numberOrNull(f.wind_speed_mph, 0),
+                wind_direction_deg: numberOrNull(f.wind_direction_deg, 0, 360)
+            })) : [],
+            fema_alerts: Array.isArray(item.fema_alerts) ? item.fema_alerts.filter(f => f && typeof f === 'object').map(f => ({
+                ...f, rings: validRings(f.rings) ? f.rings : null
+            })) : [] };
+    });
+    result.degraded ||= data.some(item => item && (!Array.isArray(item.fires) || !Array.isArray(item.fema_alerts) ||
+        item.fires.some(f => !f || typeof f !== 'object') ||
+        item.fema_alerts.some(f => !f || !validRings(f.rings))));
+    return result;
+}
+
+function normalizePoints(data) {
+    return normalizeRecords(data, item => validCoordinates(item.latitude, item.longitude) ? {
+        ...item, latitude: Number(item.latitude), longitude: Number(item.longitude),
+        frp: numberOrNull(item.frp, 0),
+        color: /^#[\da-f]{6}$/i.test(item.color) ? item.color : '#64748b'
+    } : null);
+}
+
+function normalizePerimeters(data) {
+    if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features)) throw new Error('Expected a GeoJSON FeatureCollection');
+    const normalized = normalizeRecords(data.features, feature => {
+        const geometry = feature.geometry;
+        if (feature.type !== 'Feature' || !geometry) return null;
+        const valid = geometry.type === 'Polygon' ? validRings(geometry.coordinates) :
+            geometry.type === 'MultiPolygon' && Array.isArray(geometry.coordinates) && geometry.coordinates.length > 0 && geometry.coordinates.every(validRings);
+        return valid ? feature : null;
+    });
+    return { ...normalized, data: { type: 'FeatureCollection', features: normalized.data } };
+}
+
+// Bound both network and JSON-body waits. Cancellation also invalidates callers'
+// selection tokens, so even a response already being parsed cannot update the UI.
+async function requestJson(url, { signal, timeoutMs = 30000 } = {}) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, timeoutMs);
+    try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        return { data, response };
+    } catch (error) {
+        if (controller.signal.aborted && !signal?.aborted) throw new Error('Request timed out. Please retry.');
+        throw error;
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+    }
+}
+
+function incidentCard(id) {
+    return document.getElementById(`card-${id}`);
+}
+
+function filterIncidents() {
+    state.filteredIncidents = state.incidents.filter(incident =>
+        incident.name.toLowerCase().includes(state.searchQuery) || incident.county.toLowerCase().includes(state.searchQuery));
+}
 
 // Utility to escape HTML, preventing XSS injection from external APIs
 function escapeHtml(str) {
@@ -98,22 +232,71 @@ function initTheme() {
 
 // Update Map Tile Layer based on theme
 function updateMapTiles() {
+    if (!state.map) return;
     if (state.tileLayer) {
         state.map.removeLayer(state.tileLayer);
     }
     
-    // Choose CartoDB Dark Matter or Positron (light mode). Tiles are
-    // reverse-proxied through nginx (see nginx.conf.template) so any Carto API
-    // key stays server-side and is never exposed to the browser or in logs.
-    const url = state.theme === "dark"
-        ? `/tiles/dark_all/{s}/{z}/{x}/{y}{r}.png`
-        : `/tiles/light_all/{s}/{z}/{x}/{y}{r}.png`;
-        
-    state.tileLayer = L.tileLayer(url, {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    // The server exposes only key presence. Missing configuration safely uses
+    // standard OSM tiles in both UI themes, with normal browser HTTP caching.
+    const cartoEnabled = window.MAP_CONFIG?.cartoEnabled === true;
+    const osmAttribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+    const url = cartoEnabled
+        ? (state.theme === 'dark' ? '/tiles/dark_all/{s}/{z}/{x}/{y}{r}.png' : '/tiles/light_all/{s}/{z}/{x}/{y}{r}.png')
+        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    const options = cartoEnabled ? {
+        attribution: `${osmAttribution} &copy; <a href="https://carto.com/attributions">CARTO</a>`,
         subdomains: 'abcd',
         maxZoom: 20
-    }).addTo(state.map);
+    } : {
+        attribution: osmAttribution,
+        maxZoom: 19,
+        referrerPolicy: 'strict-origin-when-cross-origin'
+    };
+    const tileLayer = L.tileLayer(url, options);
+    let tileErrors = 0;
+    tileLayer.on('loading', () => { tileErrors = 0; });
+    tileLayer.on('tileerror', () => {
+        tileErrors++;
+        if (state.tileLayer === tileLayer) showMapStatus('Base map tiles unavailable. Incident markers and overlays may still be available.');
+    });
+    tileLayer.on('load', () => {
+        if (!tileErrors && state.tileLayer === tileLayer) showMapStatus('');
+    });
+    state.tileLayer = tileLayer;
+    tileLayer.addTo(state.map);
+}
+
+function showMapStatus(message) {
+    const notice = document.getElementById('map-status');
+    if (notice) {
+        notice.textContent = message;
+        notice.classList.toggle('hidden', !message);
+    }
+}
+
+function initMapActions() {
+    // Reset View Button Click Handler
+    mapResetBtn.addEventListener('click', () => {
+        state.map?.flyTo([39.3210, -111.0937], 7, { duration: 1.5 });
+        deselectIncident();
+    });
+
+    // Theme Toggle Button Click Handler
+    themeToggleBtn.addEventListener('click', () => {
+        if (state.theme === "dark") {
+            state.theme = "light";
+            document.documentElement.classList.remove("dark");
+            themeToggleIcon.className = "fa-solid fa-moon text-sm";
+        } else {
+            state.theme = "dark";
+            document.documentElement.classList.add("dark");
+            themeToggleIcon.className = "fa-solid fa-sun text-sm";
+        }
+        try { localStorage.setItem("theme", state.theme); } catch { /* Storage may be disabled. */ }
+        updateMapTiles();
+    });
+
 }
 
 // Initialize Mapping Canvas
@@ -143,41 +326,16 @@ function initMap() {
     state.perimetersLayerGroup = L.layerGroup().addTo(state.map);
 
     // Setup Marker Cluster Group
-    state.markersClusterGroup = L.markerClusterGroup({
+    state.markersClusterGroup = typeof L.markerClusterGroup === 'function' ? L.markerClusterGroup({
         showCoverageOnHover: false,
         zoomToBoundsOnClick: true,
         maxClusterRadius: 40
-    });
+    }) : L.layerGroup();
     state.map.addLayer(state.markersClusterGroup);
 
     // Dynamic coordinates display on map move
     state.map.on('mousemove', function (e) {
-        mapCoordinates.textContent = `${e.latlng.lat.toFixed(4)}° N, ${e.latlng.lng.toFixed(4)}° W`;
-    });
-
-    // Reset View Button Click Handler
-    mapResetBtn.addEventListener('click', () => {
-        state.map.flyTo(utahCenter, defaultZoom, { duration: 1.5 });
-        deselectIncident();
-        if (state.activeFemaLayer) {
-            state.map.removeLayer(state.activeFemaLayer);
-            state.activeFemaLayer = null;
-        }
-    });
-
-    // Theme Toggle Button Click Handler
-    themeToggleBtn.addEventListener('click', () => {
-        if (state.theme === "dark") {
-            state.theme = "light";
-            document.documentElement.classList.remove("dark");
-            themeToggleIcon.className = "fa-solid fa-moon text-sm";
-        } else {
-            state.theme = "dark";
-            document.documentElement.classList.add("dark");
-            themeToggleIcon.className = "fa-solid fa-sun text-sm";
-        }
-        localStorage.setItem("theme", state.theme);
-        updateMapTiles();
+        mapCoordinates.textContent = `${Math.abs(e.latlng.lat).toFixed(4)}° ${e.latlng.lat < 0 ? 'S' : 'N'}, ${Math.abs(e.latlng.lng).toFixed(4)}° ${e.latlng.lng < 0 ? 'W' : 'E'}`;
     });
 
     // Setup Layer Groups
@@ -280,143 +438,82 @@ function initMap() {
     updateLegendVisibility();
 }
 
-// Fetch Incidents and Layers from Backend API
-async function fetchIncidents() {
-    sidebarLoading.classList.remove("hidden");
-    sidebarEmpty.classList.add("hidden");
-    incidentCards.innerHTML = "";
-
-    try {
-        const [incidentsRes, alertsRes, smokeRes, aqiRes, perimetersRes, hotspotsRes] = await Promise.all([
-            fetch("/api/incidents"),
-            fetch("/api/alerts"),
-            fetch("/api/smoke"),
-            fetch("/api/aqi"),
-            fetch("/api/perimeters"),
-            fetch("/api/hotspots")
-        ]);
-        
-        const failedFeeds = [];
-        if (incidentsRes.status >= 400) failedFeeds.push("Wildfire Incidents");
-        if (alertsRes.status >= 400) failedFeeds.push("FEMA CAP Alerts");
-        if (smokeRes.status >= 400) failedFeeds.push("Smoke Plumes");
-        if (aqiRes.status >= 400) failedFeeds.push("Air Quality (AQI)");
-        if (perimetersRes.status >= 400) failedFeeds.push("Burn Perimeters");
-        if (hotspotsRes.status >= 400) failedFeeds.push("Active satellite hotspots");
-
-        if (incidentsRes.status >= 400) {
-            throw new Error(`API returned HTTP ${incidentsRes.status} for incidents`);
-        }
-        
-        state.incidents = await incidentsRes.json();
-        state.filteredIncidents = [...state.incidents];
-        
-        // Read Cache Sync Time from Response Headers
-        const syncTimestamp = incidentsRes.headers.get("X-Data-Timestamp");
-        const stale = incidentsRes.headers.get("X-Data-Stale") === "true";
-        const indicatorEl = document.getElementById("cache-indicator");
-        if (syncTimestamp) {
-            const date = new Date(syncTimestamp);
-            const localFormatted = !isNaN(date.getTime()) ? date.toLocaleString(undefined, {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: true
-            }) : syncTimestamp;
-            if (stale) {
-                // Backend is serving an older cached snapshot (upstream outage).
-                indicatorEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-500"></i> Stale: ${localFormatted}`;
-                indicatorEl.title = "One or more upstream feeds are unreachable — showing the last cached snapshot. This data may be older than 15 minutes (incidents feed).";
-            } else {
-                indicatorEl.innerHTML = `<i class="fa-solid fa-arrows-rotate text-emerald-500 animate-pulse"></i> Sync: ${localFormatted}`;
-                indicatorEl.title = "Timestamp of backend NIFC API cache synchronization (local time) — incidents feed.";
-            }
-        } else {
-            // No sync header: data was just fetched (no cache) or header unavailable.
-            indicatorEl.innerHTML = `<i class="fa-solid fa-check text-emerald-500"></i> Up-to-date`;
-            indicatorEl.title = "Incidents feed fetched directly; no cache sync time reported.";
-        }
-        
-        // Display partial feed failures if any occurred
-        if (failedFeeds.length > 0 && typeof indicatorEl !== "undefined") {
-            indicatorEl.innerHTML = `<span class="text-rose-500 font-bold hover:underline flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Feed Outage (${failedFeeds.length})</span>`;
-            indicatorEl.title = `The following services are currently experiencing issues: ${failedFeeds.join(", ")}. Using offline backup caches where available.`;
-        }
-        
-        try {
-            if (alertsRes.status < 400) {
-                state.alerts = await alertsRes.json();
-            } else {
-                console.error(`API returned HTTP ${alertsRes.status} for alerts`);
-                state.alerts = [];
-            }
-        } catch (e) {
-            console.error("Error parsing alerts response:", e);
-            state.alerts = [];
-        }
-
-        // Parse and render Burn Perimeters
-        try {
-            if (perimetersRes && perimetersRes.status < 400) {
-                const perimeters = await perimetersRes.json();
-                renderPerimeters(perimeters);
-            }
-        } catch (e) {
-            console.error("Error parsing burn perimeters:", e);
-        }
-
-        // Parse and render NOAA Smoke Plumes
-        try {
-            if (smokeRes.status < 400) {
-                const plumes = await smokeRes.json();
-                renderSmokePlumes(plumes);
-            }
-        } catch (e) {
-            console.error("Error parsing smoke plumes:", e);
-        }
-
-        // Parse and render AQI Stations
-        try {
-            if (aqiRes.status < 400) {
-                const stations = await aqiRes.json();
-                renderAqiStations(stations);
-            }
-        } catch (e) {
-            console.error("Error parsing AQI stations:", e);
-        }
-        
-        // Parse and render Thermal Hotspots
-        try {
-            if (hotspotsRes.status < 400) {
-                const hotspots = await hotspotsRes.json();
-                renderHotspots(hotspots);
-            }
-        } catch (e) {
-            console.error("Error parsing hotspots:", e);
-        }
-        
-        updateStats();
-        renderAlerts();
-        renderIncidents();
-        populateMapMarkers();
-    } catch (error) {
-        console.error("Error fetching incidents:", error);
-        sidebarLoading.classList.add("hidden");
-        sidebarEmpty.classList.remove("hidden");
-        const headingP = sidebarEmpty.querySelector("p");
-        if (headingP) headingP.textContent = "Database Connection Offline";
-        const descP = sidebarEmpty.querySelectorAll("p")[1];
-        if (descP) descP.textContent = "Could not fetch wildfire incidents from API.";
-        
-        const indicatorEl = document.getElementById("cache-indicator");
-        if (indicatorEl) {
-            indicatorEl.innerHTML = `<span class="text-rose-500 font-bold flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation animate-pulse"></i> Offline</span>`;
-            indicatorEl.title = "Cannot establish connection to the local tracker backend server.";
-        }
+// Feed failures are independent: a failed refresh retains the last usable snapshot.
+function updateFeedStatus() {
+    const indicator = document.getElementById('cache-indicator');
+    if (!indicator) return;
+    const feeds = [...state.feeds.values()];
+    const problems = feeds.filter(feed => feed.error || feed.stale || feed.degraded);
+    const pending = feeds.some(feed => feed.loading);
+    const incidents = state.feeds.get('incidents');
+    if (problems.length) {
+        indicator.textContent = `⚠ ${problems.length} feed(s) unavailable, stale or incomplete`;
+        indicator.title = problems.map(feed => `${feed.name}: ${feed.error || (feed.stale ? 'server snapshot is stale' : 'invalid records omitted')}${feed.loaded ? '; showing last usable data' : '; no data available'}${feed.timestamp ? `; snapshot ${feed.timestamp}` : ''}`).join('\n');
+    } else if (pending) {
+        indicator.textContent = 'Syncing…';
+        indicator.title = 'Checking feed availability.';
+    } else {
+        const timestamp = validDate(incidents?.timestamp);
+        indicator.textContent = timestamp ? `Sync: ${timestamp.toLocaleString()}` : 'Loaded; sync time unknown';
+        indicator.title = 'Incidents snapshot time reported by the backend. Other feeds update independently.';
     }
+    const notice = document.getElementById('feed-status');
+    if (notice) {
+        notice.textContent = problems.map(feed => `${feed.name}: ${feed.loaded ? 'showing stale or incomplete data' : 'unavailable'}.`).join(' ');
+        notice.classList.toggle('hidden', !problems.length);
+    }
+}
+
+async function fetchIncidents() {
+    const refreshId = ++state.refreshId;
+    const retry = document.getElementById('feeds-retry-btn');
+    if (retry) retry.disabled = true;
+    const feeds = [
+        ['incidents', 'Wildfire incidents', normalizeIncidents, data => {
+            state.incidents = data;
+            filterIncidents();
+            if (state.activeIncidentId && !data.some(item => item.id === state.activeIncidentId)) deselectIncident();
+            updateStats();
+            renderIncidents();
+            populateMapMarkers();
+            const selected = data.find(item => item.id === state.activeIncidentId);
+            if (selected) fetchWeatherTelemetry(selected);
+        }],
+        ['alerts', 'Municipal alerts', normalizeAlerts, data => {
+            // A delayed popup or drawn boundary must not outlive its snapshot.
+            if (state.activeAlert) deselectIncident();
+            state.alerts = data;
+            renderAlerts();
+        }],
+        ['smoke', 'Smoke plumes', data => normalizeRecords(data, item => validRings(item.rings) ? item : null), renderSmokePlumes],
+        ['aqi', 'Air quality', normalizePoints, renderAqiStations],
+        ['perimeters', 'Burn perimeters', normalizePerimeters, renderPerimeters],
+        ['hotspots', 'Satellite hotspots', normalizePoints, renderHotspots]
+    ];
+    if (!state.feeds.get('incidents')?.loaded) sidebarLoading.classList.remove('hidden');
+    for (const [key, name] of feeds) {
+        state.feeds.set(key, { ...state.feeds.get(key), name, loading: true });
+    }
+    updateFeedStatus();
+    await Promise.allSettled(feeds.map(async ([key, name, normalize, apply]) => {
+        try {
+            const { data, response } = await requestJson(`/api/${key}`, { timeoutMs: key === 'alerts' ? 60000 : 30000 });
+            const result = normalize(data);
+            if (refreshId !== state.refreshId) return;
+            apply(result.data);
+            state.feeds.set(key, { name, loaded: true, loading: false, degraded: result.degraded,
+                stale: response.headers.get('X-Data-Stale') === 'true',
+                timestamp: response.headers.get('X-Data-Timestamp') });
+            if (key === 'incidents') renderIncidents();
+        } catch (error) {
+            if (refreshId !== state.refreshId) return;
+            console.error(`Error loading ${name}:`, error);
+            state.feeds.set(key, { ...state.feeds.get(key), loading: false, error: error.message });
+            if (key === 'incidents') renderIncidents();
+        }
+        if (refreshId === state.refreshId) updateFeedStatus();
+    }));
+    if (refreshId === state.refreshId && retry) retry.disabled = false;
 }
 
 // Update Dashboard Statistics Card
@@ -459,6 +556,10 @@ function setCardActiveState(cardEl, isActive) {
 // Render Fire Cards in the Sidebar
 function renderIncidents() {
     sidebarLoading.classList.add("hidden");
+    const unavailable = state.feeds.get('incidents')?.error && !state.feeds.get('incidents')?.loaded;
+    const paragraphs = sidebarEmpty.querySelectorAll('p');
+    if (paragraphs[0]) paragraphs[0].textContent = unavailable ? 'Wildfire data unavailable' : 'No active incidents found';
+    if (paragraphs[1]) paragraphs[1].textContent = unavailable ? 'Could not load incidents. Retry the feeds below.' : 'Try modifying your search or check again later.';
     
     if (state.filteredIncidents.length === 0) {
         sidebarEmpty.classList.remove("hidden");
@@ -472,7 +573,7 @@ function renderIncidents() {
         const isActive = state.activeIncidentId === incident.id;
         const containPercent = incident.containment !== null && incident.containment !== undefined ? incident.containment : 0;
         const containText = incident.containment !== null && incident.containment !== undefined ? `${incident.containment}%` : 'Uncontained';
-        const acresText = incident.acres ? Math.round(incident.acres).toLocaleString() : 'Size Info N/A';
+        const acresText = incident.acres !== null ? Math.round(incident.acres).toLocaleString() : 'Size Info N/A';
         
         // Format discovery date
         let dateStr = "N/A";
@@ -483,9 +584,8 @@ function renderIncidents() {
 
         return `
             <div 
-                id="card-${incident.id}" 
-                data-incident-id="${incident.id}"
-                onclick="selectIncidentById('${incident.id}')"
+                id="card-${escapeHtml(incident.id)}"
+                data-incident-id="${escapeHtml(incident.id)}"
                 class="border rounded-xl p-4 transition-all duration-200 cursor-pointer shadow-md flex flex-col justify-between border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 hover:border-slate-350 dark:hover:border-slate-700 text-slate-800 dark:text-slate-100"
             >
                 <div class="flex justify-between items-start mb-1.5">
@@ -524,20 +624,27 @@ function renderIncidents() {
     
     // Sync active classes after initial rendering
     if (state.activeIncidentId) {
-        const activeCard = document.querySelector(`[data-incident-id="${state.activeIncidentId}"]`);
+        const activeCard = incidentCard(state.activeIncidentId);
         if (activeCard) {
             setCardActiveState(activeCard, true);
         }
     }
 }
 
+incidentCards.addEventListener('click', event => {
+    const card = event.target.closest?.('[data-incident-id]');
+    if (card && incidentCards.contains(card)) selectIncidentById(card.dataset.incidentId);
+});
+
 // Populate Leaflet Map Markers
 function populateMapMarkers() {
+    if (!state.markersClusterGroup) return;
     // Clear existing markers
     state.markersClusterGroup.clearLayers();
     state.markersMap.clear();
 
     state.incidents.forEach(incident => {
+        if (!validCoordinates(incident.latitude, incident.longitude)) return;
         // Create custom DivIcon for flame badge
         const isLarge = incident.acres > 1000;
         const iconHtml = `
@@ -564,11 +671,11 @@ function populateMapMarkers() {
                 <div class="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-[10px] font-mono">
                     <div>
                         <span class="text-slate-450 dark:text-slate-550 block">SIZE</span>
-                        <strong class="text-brand-orange text-xs">${Math.round(incident.acres).toLocaleString()} Ac</strong>
+                        <strong class="text-brand-orange text-xs">${incident.acres === null ? 'N/A' : Math.round(incident.acres).toLocaleString()} Ac</strong>
                     </div>
                     <div>
                         <span class="text-slate-450 dark:text-slate-550 block">CONTAINMENT</span>
-                        <strong class="text-emerald-600 dark:text-emerald-400 text-xs">${incident.containment !== null && incident.containment !== undefined ? incident.containment + '%' : '0%'}</strong>
+                        <strong class="text-emerald-600 dark:text-emerald-400 text-xs">${incident.containment !== null && incident.containment !== undefined ? incident.containment + '%' : 'N/A'}</strong>
                     </div>
                 </div>
             </div>
@@ -585,110 +692,96 @@ function populateMapMarkers() {
     });
 }
 
+// Every selection invalidates delayed popups, geocoding and weather responses.
+function cancelSelectionWork() {
+    state.selectionId++;
+    state.weatherRequestId++;
+    state.weatherController?.abort();
+    state.weatherController = null;
+    telemetryRetryBtn.onclick = null;
+}
+
 // Select a Fire Incident
 async function selectIncidentById(id, flyToMap = true) {
-    // If clicking same card, do nothing
-    if (state.activeIncidentId === id) return;
-
-    // Deselect previous
-    const prevActiveId = state.activeIncidentId;
+    const incident = state.incidents.find(item => item.id === id);
+    if (!incident || state.activeIncidentId === id) return;
+    deselectIncident();
     state.activeIncidentId = id;
-
-    // Update active class on cards via classList
-    if (prevActiveId) {
-        const prevCard = document.querySelector(`[data-incident-id="${prevActiveId}"]`);
-        if (prevCard) {
-            setCardActiveState(prevCard, false);
-        }
+    const selectionId = state.selectionId;
+    const card = incidentCard(id);
+    if (card) {
+        setCardActiveState(card, true);
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-    const newCard = document.querySelector(`[data-incident-id="${id}"]`);
-    if (newCard) {
-        setCardActiveState(newCard, true);
-        // Scroll active card into view
-        newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
     if (state.rightCollapsed) {
         state.rightCollapsed = false;
-        if (window.innerWidth < 1024) {
-            state.leftCollapsed = true;
-        }
+        if (window.innerWidth < 1024) state.leftCollapsed = true;
         updateSidebarLayout();
     }
-
-    const incident = state.incidents.find(item => item.id === id);
-    if (!incident) return;
-
-    // Fly Map to coordinates
     const marker = state.markersMap.get(id);
-    if (marker) {
-        if (flyToMap) {
-            state.map.flyTo([incident.latitude, incident.longitude], 11, { duration: 1.5 });
-        }
-        // Open map popup dynamically
+    if (marker && state.map) {
+        if (flyToMap) state.map.flyTo([incident.latitude, incident.longitude], 11, { duration: 1.5 });
         setTimeout(() => {
-            marker.openPopup();
+            if (selectionId === state.selectionId && state.markersMap.get(id) === marker) marker.openPopup();
         }, flyToMap ? 1400 : 100);
     }
-
-    // Load Weather Telemetry
     await fetchWeatherTelemetry(incident);
 }
 
-// Deselect Incident (Recenter state)
 function deselectIncident() {
-    if (!state.activeIncidentId) return;
-
-    const activeCard = document.querySelector(`[data-incident-id="${state.activeIncidentId}"]`);
-    if (activeCard) {
-        setCardActiveState(activeCard, false);
+    cancelSelectionWork();
+    const card = incidentCard(state.activeIncidentId);
+    if (card) setCardActiveState(card, false);
+    state.map?.closePopup();
+    if (state.activeFemaLayer) {
+        state.map?.removeLayer(state.activeFemaLayer);
+        state.activeFemaLayer = null;
     }
-
-    // Close map popups
-    state.map.closePopup();
-
     state.activeIncidentId = null;
-    
-    // Reset Telemetry panel to default empty state
-    telemetryData.classList.add("hidden");
-    telemetryError.classList.add("hidden");
-    telemetryLoading.classList.add("hidden");
-    telemetryEmpty.classList.remove("hidden");
+    state.activeAlert = null;
+    telemetryData.classList.add('hidden');
+    telemetryError.classList.add('hidden');
+    telemetryLoading.classList.add('hidden');
+    telemetryEmpty.classList.remove('hidden');
 }
 
-// Retrieve Weather Telemetry from Backend
 async function fetchWeatherTelemetry(incident) {
-    telemetryEmpty.classList.add("hidden");
-    telemetryData.classList.add("hidden");
-    telemetryError.classList.add("hidden");
-    telemetryLoading.classList.remove("hidden");
-
-    // Map base fire info card immediately
+    if (state.activeIncidentId !== incident.id) return;
+    state.weatherController?.abort();
+    const controller = new AbortController();
+    state.weatherController = controller;
+    const requestId = ++state.weatherRequestId;
+    const current = () => requestId === state.weatherRequestId && state.activeIncidentId === incident.id;
+    telemetryRetryBtn.onclick = null;
+    telemetryEmpty.classList.add('hidden');
+    telemetryData.classList.add('hidden');
+    telemetryError.classList.add('hidden');
+    telemetryLoading.classList.remove('hidden');
     telFireName.textContent = incident.name;
-    telFireAcres.textContent = `${Math.round(incident.acres).toLocaleString()} Acres`;
+    telFireAcres.textContent = incident.acres === null ? 'Size N/A' : `${Math.round(incident.acres).toLocaleString()} Acres`;
     telFireCounty.textContent = `${incident.county} County`;
-    telFireCoords.textContent = `${incident.latitude.toFixed(4)}°, ${incident.longitude.toFixed(4)}°`;
-
-    const weatherApiUrl = `/api/weather?latitude=${incident.latitude}&longitude=${incident.longitude}`;
-
     try {
-        const response = await fetch(weatherApiUrl);
-        
-        if (!response.status_code && response.status >= 400) {
-            throw new Error(`NWS Sensor API Offline (Status ${response.status})`);
+        if (!validCoordinates(incident.latitude, incident.longitude)) throw new Error('Weather unavailable: incident coordinates are missing or invalid.');
+        telFireCoords.textContent = `${incident.latitude.toFixed(4)}°, ${incident.longitude.toFixed(4)}°`;
+        const { data: weather } = await requestJson(`/api/weather?latitude=${incident.latitude}&longitude=${incident.longitude}`, { signal: controller.signal });
+        if (!current()) return;
+        if (!weather || typeof weather !== 'object' || Array.isArray(weather) ||
+            !['wind_speed_mph', 'temperature_f', 'relative_humidity', 'station_id'].some(key => Object.hasOwn(weather, key))) {
+            throw new Error('Invalid weather response. Please retry.');
         }
-        
-        const weather = await response.json();
         renderWeatherTelemetry(weather);
-        
     } catch (error) {
-        console.error("Error retrieving wind telemetry:", error);
-        telemetryLoading.classList.add("hidden");
-        telemetryError.classList.remove("hidden");
-        telemetryErrorMsg.textContent = error.message || "Failed to locate active weather station grid coordinates.";
-        
-        // Attach retry handler
-        telemetryRetryBtn.onclick = () => fetchWeatherTelemetry(incident);
+        if (!current()) return;
+        console.error('Error retrieving wind telemetry:', error);
+        telemetryLoading.classList.add('hidden');
+        telemetryData.classList.add('hidden');
+        telemetryError.classList.remove('hidden');
+        telemetryErrorMsg.textContent = error.message || 'Weather unavailable. Please retry.';
+        telemetryRetryBtn.onclick = () => {
+            if (current()) fetchWeatherTelemetry(incident);
+        };
+    } finally {
+        if (current()) state.weatherController = null;
     }
 }
 
@@ -697,6 +790,13 @@ function renderWeatherTelemetry(weather) {
     telemetryLoading.classList.add("hidden");
     telemetryData.classList.remove("hidden");
 
+    weather = { ...weather };
+    for (const key of ['wind_speed_mph', 'wind_speed_kmh', 'temperature_f', 'temperature_c', 'relative_humidity', 'wind_direction_deg']) {
+        const min = key.startsWith('temperature') ? -Infinity : 0;
+        const max = key === 'relative_humidity' ? 100 : key === 'wind_direction_deg' ? 360 : Infinity;
+        weather[key] = numberOrNull(weather[key], min, max);
+    }
+    telemetryError.classList.add('hidden');
     // Wind Speed values
     telWindSpeed.textContent = weather.wind_speed_mph !== null ? weather.wind_speed_mph : "N/A";
     telWindSpeedMetric.textContent = weather.wind_speed_kmh !== null ? `${weather.wind_speed_kmh} km/h` : "N/A";
@@ -704,7 +804,7 @@ function renderWeatherTelemetry(weather) {
     // Wind Direction values
     const deg = weather.wind_direction_deg;
     telWindDirCard.textContent = weather.wind_direction_cardinal || "N/A";
-    telWindDirDeg.textContent = deg !== null ? `(${Math.round(deg)}°)` : "(0°)";
+    telWindDirDeg.textContent = deg !== null ? `(${Math.round(deg)}°)` : "(N/A)";
 
     // Rotate compass needle to point in the direction the wind is BLOWING.
     // The NWS degree is the direction *from* which the wind blows. 
@@ -736,8 +836,8 @@ function renderWeatherTelemetry(weather) {
     telStationName.title = weather.station_name || "";
     
     // Format timestamp
-    if (weather.timestamp) {
-        const dateObj = new Date(weather.timestamp);
+    const dateObj = validDate(weather.timestamp);
+    if (dateObj) {
         telObsTime.textContent = dateObj.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + " " + dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     } else {
         telObsTime.textContent = "Unknown Time";
@@ -824,12 +924,15 @@ function selectAlert(index) {
     const alert = state.alerts[index];
     if (!alert) return;
     
+    if (!state.map || !Array.isArray(alert.centroid) || !validCoordinates(...alert.centroid)) return;
     const lat = alert.centroid[0];
     const lon = alert.centroid[1];
     
     // Close other incidents or popups
     deselectIncident();
+    state.activeAlert = alert;
     
+    const selectionId = state.selectionId;
     // Fly to city centroid
     state.map.flyTo([lat, lon], 12, { duration: 1.5 });
     
@@ -838,6 +941,7 @@ function selectAlert(index) {
     
     // Open Info Popup
     setTimeout(() => {
+        if (selectionId !== state.selectionId) return;
         let popupHtml = `
             <div class="p-2 font-sans select-none max-w-[260px]">
                 <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">🚨 ${escapeHtml(alert.city)}</h4>
@@ -893,7 +997,7 @@ function drawFemaPolygon(alert) {
     const layers = [];
     if (alert.fema_alerts && alert.fema_alerts.length > 0) {
         alert.fema_alerts.forEach(fa => {
-            if (fa.rings) {
+            if (validRings(fa.rings)) {
                 // Swap coords [lon, lat] -> [lat, lon]
                 const LeafletRings = fa.rings.map(ring => {
                     return ring.map(coord => [coord[1], coord[0]]);
@@ -904,6 +1008,7 @@ function drawFemaPolygon(alert) {
                     weight: 2,
                     fillColor: '#ef4444',
                     fillOpacity: 0.25,
+                    fillRule: 'evenodd',
                     dashArray: '5, 5'
                 });
                 layers.push(polyLayer);
@@ -916,12 +1021,15 @@ function drawFemaPolygon(alert) {
     }
 }
 
+function commitLayers(target, next) {
+    target.clearLayers();
+    next.eachLayer(layer => target.addLayer(layer));
+}
+
 // Render Burn Perimeters on Leaflet Map
 function renderPerimeters(geojsonData) {
-    if (state.perimetersLayerGroup) {
-        state.perimetersLayerGroup.clearLayers();
-    }
-    if (!geojsonData) return;
+    if (!state.perimetersLayerGroup) return;
+    const next = L.layerGroup();
     
     L.geoJSON(geojsonData, {
         style: function (feature) {
@@ -956,12 +1064,14 @@ function renderPerimeters(geojsonData) {
             
             layer.bindPopup(popupContent);
         }
-    }).addTo(state.perimetersLayerGroup);
+    }).addTo(next);
+    commitLayers(state.perimetersLayerGroup, next);
 }
 
 // Draw NOAA Smoke Plumes on Leaflet Map
 function renderSmokePlumes(plumes) {
-    state.smokeLayerGroup.clearLayers();
+    if (!state.smokeLayerGroup) return;
+    const next = L.layerGroup();
     
     // Sort plumes ascending by density: Light -> Medium -> Heavy
     // This ensures denser/heavier plumes are drawn last (on top in the DOM),
@@ -997,6 +1107,7 @@ function renderSmokePlumes(plumes) {
             weight: weight,
             fillColor: color,
             fillOpacity: opacity,
+            fillRule: 'evenodd',
             interactive: true,
             pane: 'smokePane'
         });
@@ -1012,13 +1123,15 @@ function renderSmokePlumes(plumes) {
             </div>
         `);
         
-        state.smokeLayerGroup.addLayer(poly);
+        next.addLayer(poly);
     });
+    commitLayers(state.smokeLayerGroup, next);
 }
 
 // Plot AQI Stations on Leaflet Map
 function renderAqiStations(stations) {
-    state.aqiLayerGroup.clearLayers();
+    if (!state.aqiLayerGroup) return;
+    const next = L.layerGroup();
     
     stations.forEach(station => {
         const marker = L.circleMarker([station.latitude, station.longitude], {
@@ -1053,13 +1166,15 @@ function renderAqiStations(stations) {
         `;
         
         marker.bindPopup(popupHtml, { offset: [0, -2] });
-        state.aqiLayerGroup.addLayer(marker);
+        next.addLayer(marker);
     });
+    commitLayers(state.aqiLayerGroup, next);
 }
 
 // Plot active thermal hotspots (heat detection dots) on Leaflet Map
 function renderHotspots(hotspots) {
-    state.hotspotsLayerGroup.clearLayers();
+    if (!state.hotspotsLayerGroup) return;
+    const next = L.layerGroup();
     
     hotspots.forEach(spot => {
         // Style based on Fire Radiative Power (FRP)
@@ -1094,25 +1209,23 @@ function renderHotspots(hotspots) {
                 <div class="mt-2.5 pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
                     <div>
                         <span class="text-[9px] text-slate-450 dark:text-slate-550 block">Heat Output (FRP)</span>
-                        <strong class="text-xs font-mono text-rose-500">${spot.frp.toFixed(1)} MW</strong>
+                        <strong class="text-xs font-mono text-rose-500">${numberOrNull(spot.frp, 0)?.toFixed(1) ?? 'N/A'} MW</strong>
                     </div>
                 </div>
             </div>
         `;
         
         marker.bindPopup(popupHtml, { offset: [0, -1] });
-        state.hotspotsLayerGroup.addLayer(marker);
+        next.addLayer(marker);
     });
+    commitLayers(state.hotspotsLayerGroup, next);
 }
 
 // Hook up search filtering
 searchInput.addEventListener("input", (e) => {
     state.searchQuery = e.target.value.toLowerCase().trim();
     
-    state.filteredIncidents = state.incidents.filter(incident => {
-        return incident.name.toLowerCase().includes(state.searchQuery) || 
-               incident.county.toLowerCase().includes(state.searchQuery);
-    });
+    filterIncidents();
 
     renderIncidents();
 });
@@ -1130,7 +1243,9 @@ searchInput.addEventListener("keydown", async (e) => {
 // Helper: Convert degrees to cardinal direction in JavaScript
 function getCardinalDirectionJS(degrees) {
     if (degrees === null || degrees === undefined) return "N/A";
-    degrees = degrees % 360;
+    degrees = numberOrNull(degrees);
+    if (degrees === null) return 'N/A';
+    degrees = ((degrees % 360) + 360) % 360;
     const directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
     const idx = Math.round(degrees / 22.5) % 16;
     return directions[idx];
@@ -1141,9 +1256,11 @@ function getWindDrivenCorridor(incident, windSpeed, windDirDeg) {
     const firePoint = turf.point([incident.longitude, incident.latitude]);
     const BASE_BUFFER_MILES = 5;
     
-    if (windSpeed && windDirDeg !== undefined && windDirDeg !== null) {
+    windSpeed = numberOrNull(windSpeed, 0);
+    windDirDeg = numberOrNull(windDirDeg, 0, 360);
+    if (windSpeed > 0 && windDirDeg !== null) {
         // Downwind direction is wind direction + 180 degrees
-        const downwindDeg = (windDirDeg + 185) % 360; // 180 vector shift
+        const downwindDeg = (windDirDeg + 180) % 360; // 180 vector shift
         
         // Shift length: wind_speed * 0.2 miles
         const shiftMiles = windSpeed * 0.2;
@@ -1165,25 +1282,44 @@ function getWindDrivenCorridor(incident, windSpeed, windDirDeg) {
 }
 
 // Perform spatial verification loop checks
+function safetyDataCurrent() {
+    return ['incidents', 'alerts'].every(key => {
+        const feed = state.feeds.get(key);
+        const timestamp = validDate(feed?.timestamp);
+        const age = timestamp ? Date.now() - timestamp.getTime() : Infinity;
+        return feed?.loaded && !feed.loading && !feed.error && !feed.stale && !feed.degraded && age >= -60000 && age <= 20 * 60 * 1000;
+    });
+}
+
 function verifySpatialSafety(lat, lon) {
+    if (typeof turf === 'undefined') return { inFema: false, inCorridor: false, threateningFires: [], complete: false };
+    let complete = safetyDataCurrent();
     const pt = turf.point([lon, lat]);
     let inFema = false;
     let femaDetails = null;
     let inCorridor = false;
     let threateningFires = [];
 
-    // 1. Check active FEMA Alert zones
+    // 1. Check active FEMA Alert zones (even-odd ring fill matches backend multipart/hole/island semantics)
     state.alerts.forEach(alert => {
         if (alert.fema_alerts) {
             alert.fema_alerts.forEach(fa => {
                 if (fa.rings) {
+                    if (!validRings(fa.rings)) {
+                        complete = false;
+                        return;
+                    }
                     try {
-                        const poly = turf.polygon(fa.rings);
-                        if (turf.booleanPointInPolygon(pt, poly)) {
+                        let insideCount = 0;
+                        for (const ring of fa.rings) {
+                            if (turf.booleanPointInPolygon(pt, turf.polygon([ring]))) insideCount++;
+                        }
+                        if (insideCount % 2 === 1) {
                             inFema = true;
                             femaDetails = fa;
                         }
                     } catch (e) {
+                        complete = false;
                         console.error("FEMA polygon check error:", e);
                     }
                 }
@@ -1208,32 +1344,44 @@ function verifySpatialSafety(lat, lon) {
 
     // 3. Check distance and corridor intersection for all active fires
     state.incidents.forEach(incident => {
-        const windData = fireWindMap.get(incident.id) || { windSpeed: 0, windDirDeg: null };
+        if (!validCoordinates(incident.latitude, incident.longitude)) { complete = false; return; }
+        // Alerts contain winds only for fires intersecting a municipality.
+        // An omitted wind is unknown, even when both feeds are fresh.
+        const windData = fireWindMap.get(incident.id);
+        const windSpeed = numberOrNull(windData?.windSpeed, 0);
+        const windDirDeg = numberOrNull(windData?.windDirDeg, 0, 360);
+        if (windSpeed === null || (windSpeed > 0 && windDirDeg === null)) complete = false;
         try {
-            const corridor = getWindDrivenCorridor(incident, windData.windSpeed, windData.windDirDeg);
+            const corridor = getWindDrivenCorridor(incident, windSpeed, windDirDeg);
             if (turf.booleanPointInPolygon(pt, corridor)) {
                 inCorridor = true;
                 const distance = turf.distance(pt, turf.point([incident.longitude, incident.latitude]), { units: 'miles' });
                 threateningFires.push({
                     name: incident.name,
                     distance: distance.toFixed(1),
-                    windSpeed: windData.windSpeed,
-                    windDir: getCardinalDirectionJS(windData.windDirDeg)
+                    windSpeed: windSpeed ?? 'N/A',
+                    windDir: getCardinalDirectionJS(windDirDeg)
                 });
             }
         } catch (e) {
+            complete = false;
             console.error("Risk corridor check error:", e);
         }
     });
 
-    return { inFema, femaDetails, inCorridor, threateningFires };
+    return { inFema, femaDetails, inCorridor, threateningFires, complete };
 }
 
 // Display geocode and safety analysis results
 function displayGeocodeResult(lat, lon, displayName, safety) {
     let statusClass = "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20";
-    let statusText = "🟢 STATUS: SAFE ZONE";
-    let statusDesc = "This location is currently outside active FEMA alert zones and wind-driven wildfire threat corridors.";
+    let statusText = 'NO MATCH IN AVAILABLE DATA';
+    let statusDesc = 'No alert zone or modeled fire corridor matched this location. This does not establish safety; follow local officials.';
+    if (!safety.complete || !safetyDataCurrent()) {
+        statusClass = 'bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20';
+        statusText = 'LOCATION RISK UNKNOWN';
+        statusDesc = 'Incident or alert data is unavailable, stale, incomplete, or has unknown freshness. Current wildfire risk cannot be determined. Follow local officials.';
+    }
     
     if (safety.inFema) {
         statusClass = "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 animate-pulse";
@@ -1243,9 +1391,12 @@ function displayGeocodeResult(lat, lon, displayName, safety) {
         statusClass = "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20";
         statusText = "🟠 WARNING: RISK CORRIDOR";
         let fireList = safety.threateningFires.map(f => `• ${escapeHtml(f.name)} (${escapeHtml(f.distance)} mi away, wind ${escapeHtml(f.windDir)} @ ${escapeHtml(f.windSpeed)} mph)`).join('<br/>');
-        statusDesc = `Location is downwind of active fires:<br/>${fireList}`;
+        statusDesc = `Location intersects a modeled fire threat area:<br/>${fireList}`;
     }
 
+    if ((!safety.complete || !safetyDataCurrent()) && (safety.inFema || safety.inCorridor)) {
+        statusDesc += '<br/>Data is stale or incomplete; current conditions may differ. Follow local officials.';
+    }
     const popupHtml = `
         <div class="p-3 font-sans max-w-[280px]">
             <h4 class="font-bold text-slate-800 dark:text-slate-100 text-sm mb-1">📍 Search Result</h4>
@@ -1279,7 +1430,9 @@ function displayGeocodeResult(lat, lon, displayName, safety) {
 // Search selection handler
 async function handleSearchSubmit(query) {
     query = query.trim();
-    if (!query) return;
+    if (!query || !state.map) return;
+    deselectIncident();
+    const selectionId = state.selectionId;
 
     // 1. Check matches in alert city names
     const matchedAlertIndex = state.alerts.findIndex(alert => alert.city.toLowerCase() === query.toLowerCase());
@@ -1311,30 +1464,29 @@ async function handleSearchSubmit(query) {
 
     // 5. Query OpenStreetMap Nominatim Geocoding API
     try {
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error("Geocoding service unavailable");
-        
-        const data = await response.json();
-        if (data && data.length > 0) {
-            const lat = parseFloat(data[0].lat);
-            const lon = parseFloat(data[0].lon);
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&viewbox=-114.053,42.001,-109.041,36.997&bounded=1&countrycodes=us`;
+        const { data } = await requestJson(url);
+        if (selectionId !== state.selectionId) return;
+        if (!Array.isArray(data)) throw new Error('Invalid geocoding response');
+        if (data.length > 0) {
+            const lat = numberOrNull(data[0]?.lat, 36.997, 42.001);
+            const lon = numberOrNull(data[0]?.lon, -114.053, -109.041);
+            if (lat === null || lon === null) throw new Error('Location is outside Utah or has invalid coordinates');
             const displayName = data[0].display_name;
             
             // Recenter map
             state.map.flyTo([lat, lon], 13, { duration: 1.5 });
             
             // Run spatial verification check
-            const safety = verifySpatialSafety(lat, lon);
-            
             // Display safety result popup
             setTimeout(() => {
-                displayGeocodeResult(lat, lon, displayName, safety);
+                if (selectionId === state.selectionId) displayGeocodeResult(lat, lon, displayName, verifySpatialSafety(lat, lon));
             }, 1500);
         } else {
             alert(`No location found for query: "${query}"`);
         }
     } catch (err) {
+        if (selectionId !== state.selectionId) return;
         console.error("Geocoding failed:", err);
         alert("Failed to connect to geocoding service. Please try again.");
     }
@@ -1343,10 +1495,21 @@ async function handleSearchSubmit(query) {
 // App Initialization entry point
 window.addEventListener("DOMContentLoaded", () => {
     initTheme();
-    initMap();
+    initMapActions();
+    try {
+        initMap();
+    } catch (error) {
+        console.error('Map initialization failed:', error);
+        state.map?.remove();
+        state.map = null;
+        state.markersClusterGroup = state.perimetersLayerGroup = state.smokeLayerGroup = state.aqiLayerGroup = state.hotspotsLayerGroup = null;
+        showMapStatus('Map unavailable. Incident lists and weather remain available. Reload to retry map libraries.');
+    }
     initTooltips();
     initCollapsibles();
+    document.getElementById('feeds-retry-btn')?.addEventListener('click', fetchIncidents);
     fetchIncidents();
+    setInterval(fetchIncidents, 5 * 60 * 1000);
 });
 
 // Collapsable Left Sidebar Panels
@@ -1476,8 +1639,8 @@ function initTooltips() {
                     Municipalities are flagged with alert tiers based on spatial intersections with projected wildfire threat zones:
                 </p>
                 <div class="space-y-1.5 text-[10px] leading-normal mt-2">
-                    <div><span class="inline-block px-1 rounded bg-emerald-500/10 text-emerald-500 font-bold mr-1">Level 1: Ready</span> <strong>Be Prepared.</strong> A fire is nearby (within 5 miles) but wind vectors are moving it away. Prepare emergency supplies and make an evacuation plan.</div>
-                    <div><span class="inline-block px-1 rounded bg-amber-500/10 text-amber-500 font-bold mr-1">Level 2: Set</span> <strong>Be Alert.</strong> Municipal boundaries intersect the projected path of active fire corridors driven by NWS winds. Evacuate voluntarily or pack bags to leave at a moment's notice.</div>
+                    <div><span class="inline-block px-1 rounded bg-emerald-500/10 text-emerald-500 font-bold mr-1">Level 1: Ready</span> <strong>Be Prepared.</strong> The municipality intersects the modeled downwind threat area beyond the direct five-mile zone. Prepare emergency supplies and make an evacuation plan.</div>
+                    <div><span class="inline-block px-1 rounded bg-amber-500/10 text-amber-500 font-bold mr-1">Level 2: Set</span> <strong>Be Alert.</strong> A fire is within five miles of the municipality or its direct buffer intersects municipal boundaries. Be ready to leave and follow local emergency instructions.</div>
                     <div><span class="inline-block px-1 rounded bg-red-500/10 text-red-500 font-bold mr-1 animate-pulse">FEMA Active</span> <strong>High Alert.</strong> Official FEMA evacuation or hazard warning polygons overlap this town. Follow all instructions from emergency officials immediately.</div>
                 </div>
             </div>
@@ -1573,7 +1736,7 @@ function initTooltips() {
     }
     
     document.addEventListener("mouseenter", (e) => {
-        const trigger = e.target.closest(".help-tooltip-trigger");
+        const trigger = e.target.closest?.(".help-tooltip-trigger");
         if (trigger) {
             const tooltipId = trigger.getAttribute("data-tooltip");
             showTooltip(trigger, tooltipId);
@@ -1581,7 +1744,7 @@ function initTooltips() {
     }, true);
     
     document.addEventListener("mouseleave", (e) => {
-        const trigger = e.target.closest(".help-tooltip-trigger");
+        const trigger = e.target.closest?.(".help-tooltip-trigger");
         if (trigger) {
             hideTooltip();
         }

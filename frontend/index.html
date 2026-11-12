@@ -113,6 +113,11 @@
                     <div id="alert-cards" class="space-y-2.5"></div>
                 </div>
 
+                <div class="px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+                    <p id="feed-status" role="status" aria-live="polite" class="hidden"></p>
+                    <button id="feeds-retry-btn" type="button" class="mt-1 underline disabled:opacity-50">Refresh feeds</button>
+                </div>
+
                 <!-- Incident List -->
                 <div id="incident-list" class="p-4 space-y-3">
                     <h2 class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-1.5 cursor-pointer select-none" id="toggle-incidents-btn">
@@ -148,7 +153,7 @@
                     <a href="https://github.com/Jmaes-Nag/utah-fire-tracker" target="_blank" rel="noopener noreferrer" class="hover:underline hover:text-brand-orange transition-colors duration-150 flex items-center gap-1"><i class="fa-brands fa-github text-slate-650 dark:text-slate-400"></i> GitHub Repo</a>
                 </div>
                 <div class="flex items-center gap-1.5 font-mono">
-                    <span id="cache-indicator" class="flex items-center gap-1 text-slate-400 dark:text-slate-500"><i class="fa-solid fa-clock animate-pulse"></i> Syncing...</span>
+                    <span role="status" aria-live="polite" id="cache-indicator" class="flex items-center gap-1 text-slate-400 dark:text-slate-500"><i class="fa-solid fa-clock animate-pulse"></i> Syncing...</span>
                     <span class="help-tooltip-trigger cursor-pointer text-slate-400 hover:text-slate-650 dark:text-slate-500 dark:hover:text-slate-300" data-tooltip="tooltip-cache-freshness" title="Data Freshness Disclosure"><i class="fa-solid fa-circle-info"></i></span>
                 </div>
             </div>
@@ -168,6 +173,8 @@
                 <i id="left-toggle-icon" class="fa-solid fa-chevron-left text-sm transition-transform duration-300"></i>
             </button>
             
+            <p id="map-status" role="status" aria-live="polite" class="hidden absolute bottom-16 left-4 right-4 z-[1000] p-3 rounded-lg bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-400 text-xs shadow-lg"></p>
+
             <!-- Map Overlay UI -->
             <div class="absolute top-4 right-4 z-[1020] flex flex-col gap-2">
                 <!-- Toggle Right Sidebar Button -->
@@ -388,6 +395,7 @@
     </div>
 
     <!-- Application Script -->
+    <script src="/map-config.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

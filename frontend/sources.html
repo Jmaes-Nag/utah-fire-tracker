@@ -38,7 +38,8 @@
     </script>
     <script>
         // Init theme immediately based on localStorage to avoid flash
-        const savedTheme = localStorage.getItem("theme") || "light";
+        let savedTheme = 'light';
+        try { savedTheme = localStorage.getItem("theme") === 'dark' ? 'dark' : 'light'; } catch { /* Storage may be disabled. */ }
         if (savedTheme === "light") {
             document.documentElement.classList.remove("dark");
         } else {
@@ -165,12 +166,13 @@
                         <div>
                             <h4 class="font-bold text-slate-800 dark:text-slate-200 text-xs uppercase tracking-wider">Safety & Warning Corridors</h4>
                             <p class="text-xs text-slate-550 dark:text-slate-450 mt-1 leading-relaxed">
-                                The map draws **Wind-Driven Risk Corridors** (blue overlay cones extending from active fires). If you search for an address:
+                                Address searches compare Utah locations with available FEMA polygons and modeled wind-driven fire corridors. Municipal Level 2: Set indicates the direct five-mile zone; Level 1: Ready indicates the extended downwind area. Search results use these labels:
                             </p>
                             <ul class="list-disc list-inside mt-2 text-xs text-slate-550 dark:text-slate-450 space-y-1 pl-2">
                                 <li><strong class="text-rose-500">Critical Threat:</strong> The location falls inside an active FEMA warning/evacuation zone.</li>
-                                <li><strong class="text-amber-500">Warning Corridor:</strong> The location is downwind of an active fire, in the direct path of wind and drifting embers.</li>
-                                <li><strong class="text-emerald-500">Safe Zone:</strong> The location is currently outside active perimeters, risk cones, and alert zones.</li>
+                                <li><strong class="text-amber-500">Warning Corridor:</strong> The location intersects a modeled fire threat area, including the direct five-mile buffer and any known downwind extension.</li>
+                                <li><strong class="text-emerald-500">No Match in Available Data:</strong> No alert zone or modeled corridor matched. This does not establish safety; follow local officials.</li>
+                                <li><strong>Location Risk Unknown:</strong> Incident or alert data is unavailable, stale, incomplete, or has unknown freshness.</li>
                             </ul>
                         </div>
                     </div>
@@ -182,7 +184,7 @@
         <!-- TAB 2: DATA SOURCES & DIRECTORY -->
         <div id="tab-sources" class="hidden space-y-6">
             <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                This dashboard aggregates data across federal, state, and global spatial monitoring networks. All feeds are cached server-side to protect public APIs — most layers refresh every <strong>15 minutes</strong>, weather every <strong>5 minutes</strong>, and FEMA alerts ride the 15-minute alerts cache. During an upstream outage, the server shows the <strong>last cached snapshot</strong> (marked stale) rather than nothing. Below are direct links to every queried API endpoint.
+                This dashboard aggregates data across federal, state, and global spatial monitoring networks. All feeds are cached server-side to protect public APIs — most layers refresh every <strong>15 minutes</strong>, weather every <strong>5 minutes</strong>, and FEMA alerts ride the 15-minute alerts cache. During an upstream outage, the server shows the <strong>last cached snapshot</strong> (marked stale) rather than nothing. Below are links to the configured wildfire, weather, smoke, air-quality, and CAP services.
             </p>
             
             <div class="space-y-4">
@@ -197,7 +199,7 @@
                                 Provides incident names, coordinates, discovery times, containment percentages, and size estimates.
                             </p>
                         </div>
-                        <a href="https://services3.arcgis.com/T4gW1m13t7aLxGsq/ArcGIS/rest/services/Active_Wildland_Fire_Locations/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                        <a href="https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
@@ -217,7 +219,7 @@
                                 Provides geographical polygon boundaries showing current and historical burned areas.
                             </p>
                         </div>
-                        <a href="https://services3.arcgis.com/T4gW1m13t7aLxGsq/ArcGIS/rest/services/Wildland_Fire_Perimeters/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                        <a href="https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
@@ -254,55 +256,55 @@
                             <span class="text-[9px] font-bold uppercase tracking-wider text-amber-500 font-mono">Atmospheric Quality</span>
                             <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">NOAA Satellite Smoke Plumes</h3>
                             <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
-                                Provides vector outlines of smoke dispersion areas across North America, classified by density.
+                                Shows NOAA HMS smoke outlines intersecting Utah, classified by density. <a href="https://services2.arcgis.com/r6iFVcMJeA4kB4GC/arcgis/rest/services/NOAA_HMS_Smoke_Detection_Replica/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="underline">Replica feed</a> is used when the primary smoke service is unavailable.
                             </p>
                         </div>
-                        <a href="https://services8.arcgis.com/wb7Rv9HnpGy2AL3c/ArcGIS/rest/services/HMS_Smoke_Plumes_Daily/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-colors gap-1">
+                        <a href="https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-colors gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
                     <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
-                        <span>Provider: NOAA Satellite Analysis Branch</span>
+                        <span>Provider: NOAA HMS via Esri ArcGIS</span>
                         <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
 
-                <!-- Source 5: EPA PM2.5 Monitors -->
+                <!-- Source 5: OpenAQ PM2.5 Monitors -->
                 <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
                     <div class="flex justify-between items-start gap-4">
                         <div>
                             <span class="text-[9px] font-bold uppercase tracking-wider text-emerald-500 font-mono">Air Quality</span>
-                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">US EPA AirNow Monitor Feed</h3>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">OpenAQ PM2.5 Monitor Feed</h3>
                             <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
-                                Displays real-time particulate sensor telemetry mapped to the EPA Air Quality Index (AQI) scale.
+                                Shows the latest OpenAQ PM2.5 measurements from the configured Esri feed. The backend calculates AQI using the EPA 2024 PM2.5 breakpoints; these are not official AirNow AQI observations.
                             </p>
                         </div>
-                        <a href="https://services.arcgis.com/aUqgLS0yNO0gEqt6/ArcGIS/rest/services/AirNow_AQI/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                        <a href="https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Air_Quality_PM25_Latest_Results/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
                     <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
-                        <span>Provider: Environmental Protection Agency (EPA)</span>
+                        <span>Provider: OpenAQ via Esri ArcGIS</span>
                         <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
 
-                <!-- Source 6: FEMA Emergency Alerts -->
+                <!-- Source 6: CAP Emergency Alerts -->
                 <div class="p-5 bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm hover:border-slate-350 dark:hover:border-slate-700 transition-all duration-200">
                     <div class="flex justify-between items-start gap-4">
                         <div>
                             <span class="text-[9px] font-bold uppercase tracking-wider text-brand-red font-mono">Public Safety Alerts</span>
-                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">FEMA IPAWS CAP Warnings</h3>
+                            <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">CAP Emergency Warnings</h3>
                             <p class="text-xs text-slate-550 dark:text-slate-400 mt-1.5 leading-relaxed">
-                                Delivers official emergency warning boundaries and evacuation instruction polygons.
+                                Shows active fire-related Common Alerting Protocol (CAP) warning polygons and instructions from issuing agencies through the Esri CAP feed. These appear under the dashboard’s FEMA alert labels.
                             </p>
                         </div>
-                        <a href="https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/IPAWS_CAP_Active_Alerts/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                        <a href="https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/CAP_Alerts_Feed/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
                     <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
-                        <span>Provider: Federal Emergency Management Agency (FEMA)</span>
+                        <span>Provider: Issuing agencies via Esri CAP feed</span>
                         <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>
@@ -317,12 +319,12 @@
                                 Provides thermal heat anomalies from MODIS & VIIRS sensors, measuring Fire Radiative Power.
                             </p>
                         </div>
-                        <a href="https://services7.arcgis.com/aUqgLS0yNO0gEqt6/ArcGIS/rest/services/Active_Fire_Hotspots/FeatureServer/0" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
+                        <a href="https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Fire_Detections_(v1)/FeatureServer/0/query" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 bg-slate-100 hover:bg-brand-orange/10 hover:text-brand-orange dark:bg-slate-800 dark:hover:bg-brand-orange/20 text-[10px] font-mono font-bold rounded-lg transition-colors flex items-center gap-1">
                             <i class="fa-solid fa-arrow-up-right-from-square"></i> API Endpoint
                         </a>
                     </div>
                     <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-850 text-[10px] font-mono text-slate-400 dark:text-slate-500 flex justify-between">
-                        <span>Provider: NOAA Hazard Mapping System</span>
+                        <span>Provider: NOAA satellite detections via Esri ArcGIS</span>
                         <span>Sync: 15-Minute Cache Protection</span>
                     </div>
                 </div>

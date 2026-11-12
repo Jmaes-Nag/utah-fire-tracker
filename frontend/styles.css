@@ -352,20 +352,20 @@
 /* Dynamic Grid Layout & Panel Transitions */
 #app-layout {
     display: grid;
-    grid-template-columns: 360px 1fr 380px;
+    grid-template-columns: 360px minmax(0, 1fr) 380px;
     transition: grid-template-columns 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #app-layout.left-collapsed {
-    grid-template-columns: 0px 1fr 380px;
+    grid-template-columns: 0px minmax(0, 1fr) 380px;
 }
 
 #app-layout.right-collapsed {
-    grid-template-columns: 360px 1fr 0px;
+    grid-template-columns: 360px minmax(0, 1fr) 0px;
 }
 
 #app-layout.left-collapsed.right-collapsed {
-    grid-template-columns: 0px 1fr 0px;
+    grid-template-columns: 0px minmax(0, 1fr) 0px;
 }
 
 aside, section {
