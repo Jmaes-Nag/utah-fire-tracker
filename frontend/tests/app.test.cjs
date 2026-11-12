@@ -779,7 +779,7 @@ test('fresh feeds with omitted per-fire wind remain incomplete while retaining k
 
 test('source directory matches configured service endpoints and distinguishes OpenAQ from the EPA AQI scale', () => {
     const sources = fs.readFileSync(path.join(__dirname, '../sources.html'), 'utf8');
-    const backend = fs.readFileSync(path.join(__dirname, '../../backend/app/main.py'), 'utf8');
+    const backend = fs.readFileSync(path.join(__dirname, '../../backend/app/config.py'), 'utf8');
     for (const key of [
         'NIFC_API_URL',
         'PERIMETERS_URL',

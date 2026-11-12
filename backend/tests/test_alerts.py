@@ -2,7 +2,8 @@ import unittest
 
 from shapely.geometry import box
 
-from app.main import calculate_pm25_aqi, threat_geometry
+from app.feeds import calculate_pm25_aqi
+from app.geometry import threat_geometry
 
 
 class TestAlertsEngine(unittest.TestCase):
