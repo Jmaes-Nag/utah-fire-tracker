@@ -112,6 +112,9 @@ def main():
         if not tests:
             raise RuntimeError("No frontend regression tests found")
         run("node", "--test", *tests)
+        if not (ROOT / "frontend/node_modules/.bin/prettier").exists():
+            raise RuntimeError("Prettier missing. Run `make setup` first.")
+        run("npm", "--prefix", "frontend", "run", "--silent", "format:check")
     if args.suite == "all":
         tests = unittest.defaultTestLoader.discover(str(ROOT / "scripts/tests"), pattern="test_*.py")
         if not unittest.TextTestRunner(verbosity=1).run(tests).wasSuccessful():

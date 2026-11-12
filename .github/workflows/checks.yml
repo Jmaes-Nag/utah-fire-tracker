@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - run: npm --prefix frontend ci --ignore-scripts --no-audit --no-fund
       - run: python3 scripts/check.py --suite frontend
 
   public-files:

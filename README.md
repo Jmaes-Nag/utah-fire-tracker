@@ -61,6 +61,7 @@ Utah_fire_tracker/
 │   ├── styles.css             # Legend styling & transition overrides
 │   ├── nginx.conf.template    # Nginx reverse-proxy configuration
 │   ├── tests/                 # Dependency-free frontend regression tests
+│   ├── package.json           # Development tooling only (Prettier); no runtime npm dependencies
 │   └── Dockerfile
 ├── docker-compose.yml         # Container Orchestration
 └── .gitignore                 # Excludes local environments & downloaded GeoJSONs

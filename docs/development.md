@@ -3,15 +3,17 @@
 From the repository root, run:
 
 ```sh
-make setup             # Create .venv and install backend and lint dependencies once
+make setup             # Create .venv, install backend and lint dependencies, install Prettier
 make check             # Offline backend/frontend/script tests, lint, public files, whitespace
-make format            # Apply ruff fixes and formatting to backend/ and scripts/
+make format            # Apply ruff (backend/, scripts/) and Prettier (frontend JS/CSS) formatting
 make check-containers  # Image builds, Python 3.11 tests, Nginx/HTTP/API proxy checks
 ```
 
 Python 3.11 or later and Node.js 20 or later are required. The container checks also require a running Docker engine. `PYTHON=/path/to/python make check` selects another interpreter; when `.venv` exists the backend runner uses that environment. The commands work without a configured Carto key or downloaded municipal data.
 
-Backend dependencies are pinned to exact versions in `backend/requirements.txt`. To update one, change the pin, run `make setup`, `make check` and `make check-containers`, and commit the result. The backend check also runs `ruff check` and `ruff format --check` using the settings in `pyproject.toml`; run `make format` before committing Python changes.
+Backend dependencies are pinned to exact versions in `backend/requirements.txt`. To update one, change the pin, run `make setup`, `make check` and `make check-containers`, and commit the result. The backend check also runs `ruff check` and `ruff format --check` using the settings in `pyproject.toml`; run `make format` before committing.
+
+The frontend check runs Prettier (pinned in `frontend/package.json`) over `app.js`, `styles.css` and the tests. Prettier is a development tool only: the served application and its tests have no npm runtime dependencies, and the HTML pages are not formatted. `make setup` needs network access to download it.
 
 For a shorter feedback cycle, use `make check-backend`, `make check-frontend`, or `make check-public`. The Python entry points are available directly if Make is unavailable, for example `python3 scripts/check.py --suite frontend`.
 

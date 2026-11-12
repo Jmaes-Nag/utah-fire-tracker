@@ -33,6 +33,8 @@ Afterwards, drop the now-unneeded entries from `.gitignore` (`/NEXT_STEPS.md`, `
 
 ## Phase 2 — Tooling guard rails
 
+Status: done on 2026-11-12. Python versions needed no change: the image runs 3.11 and CI already tests 3.11 and 3.14. The HTML pages are deliberately left unformatted until Phase 4.
+
 - Add `ruff` (lint + format) for Python and a formatter for JS/HTML/CSS, wired into `scripts/check.py` and CI. `app.js` has 66 lines over 140 characters; `main.py` relies on packed multi-assignment lines.
 - Pin dependencies. `requirements.txt` has only lower bounds; `pydantic` is listed but never imported directly.
 - Align Python versions: the Dockerfile runs 3.11, CI tests 3.11 and 3.14, local is 3.14. Pick the deployed version and one newer.
