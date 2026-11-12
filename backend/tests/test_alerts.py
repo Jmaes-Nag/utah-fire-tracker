@@ -10,6 +10,7 @@ from shapely.geometry import box
 
 from app import alerts, arcgis, boundaries, feeds, util
 from app import weather as weather_feed
+from app.cache import Snapshot
 from app.feeds import calculate_pm25_aqi
 from app.geometry import threat_geometry
 
@@ -18,14 +19,15 @@ from .support import BackendTest, ring
 
 class AlertTests(BackendTest):
     def alert_sources(self, incidents=None, warnings=None, weather=None):
-        self.replace(feeds, "get_incidents", AsyncMock(return_value=incidents or []))
+        self.replace(feeds, "incidents_snapshot", AsyncMock(return_value=Snapshot(incidents or [], "")))
         self.replace(arcgis, "fetch_arcgis", AsyncMock(return_value={"features": warnings or []}))
         self.replace(
             weather_feed,
-            "get_weather",
+            "observation_snapshot",
             AsyncMock(
-                return_value=weather
-                or {"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}
+                return_value=Snapshot(
+                    weather or {"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}, ""
+                )
             ),
         )
 
@@ -43,7 +45,7 @@ class AlertTests(BackendTest):
 
     async def test_failed_incidents_preserve_previous_alerts_not_cached_all_clear(self):
         self.alert_sources()
-        feeds.get_incidents.side_effect = HTTPException(status_code=503)
+        feeds.incidents_snapshot.side_effect = HTTPException(status_code=503)
         alerts.alerts_cache.update(data=[{"city": "Previous Risk"}], expiry=0, created_at="old")
         result = await self.api("/api/alerts")
         self.assertEqual(result.status_code, 200)
@@ -54,7 +56,7 @@ class AlertTests(BackendTest):
 
     async def test_failed_incidents_without_cache_return_503(self):
         self.alert_sources()
-        feeds.get_incidents.side_effect = HTTPException(status_code=502)
+        feeds.incidents_snapshot.side_effect = HTTPException(status_code=502)
         result = await self.api("/api/alerts")
         self.assertEqual(result.status_code, 503)
         self.assertIsNone(alerts.alerts_cache["data"])
@@ -75,7 +77,7 @@ class AlertTests(BackendTest):
 
     async def test_cold_weather_failure_returns_visible_base_risk_marked_stale(self):
         self.alert_sources(incidents=[self.fire()])
-        weather_feed.get_weather.side_effect = HTTPException(status_code=502)
+        weather_feed.observation_snapshot.side_effect = HTTPException(status_code=502)
         result = await self.api("/api/alerts")
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()[0]["risk_level"], 2)
@@ -87,11 +89,10 @@ class AlertTests(BackendTest):
     async def test_stale_incident_dependency_marks_alerts_stale(self):
         self.alert_sources()
 
-        async def stale_incidents(response):
-            response.headers["X-Data-Stale"] = "true"
-            return [self.fire()]
+        async def stale_incidents():
+            return Snapshot([self.fire()], "", stale=True)
 
-        feeds.get_incidents.side_effect = stale_incidents
+        feeds.incidents_snapshot.side_effect = stale_incidents
         result = await self.api("/api/alerts")
         self.assertEqual(result.headers["X-Data-Stale"], "true")
         self.assertIsNone(alerts.alerts_cache["data"])
@@ -100,10 +101,9 @@ class AlertTests(BackendTest):
         self.alert_sources(incidents=[self.fire()])
 
         async def stale_weather(**kwargs):
-            kwargs["response"].headers["X-Data-Stale"] = "true"
-            return {"wind_speed_mph": 0, "wind_direction_deg": None}
+            return Snapshot({"wind_speed_mph": 0, "wind_direction_deg": None}, "", stale=True)
 
-        weather_feed.get_weather.side_effect = stale_weather
+        weather_feed.observation_snapshot.side_effect = stale_weather
         alerts.alerts_cache.update(data=[{"city": "Downwind City"}], created_at="old", expiry=0)
         result = await self.api("/api/alerts")
         self.assertEqual({item["city"] for item in result.json()}, {"Downwind City", "Test City"})
@@ -164,9 +164,9 @@ class AlertTests(BackendTest):
         self.alert_sources(incidents=[self.fire()])
         results = await asyncio.gather(*(alerts.get_alerts() for _ in range(15)))
         self.assertTrue(all(results[0] == result for result in results))
-        self.assertEqual(feeds.get_incidents.await_count, 1)
+        self.assertEqual(feeds.incidents_snapshot.await_count, 1)
         self.assertEqual(arcgis.fetch_arcgis.await_count, 1)
-        self.assertEqual(weather_feed.get_weather.await_count, 1)
+        self.assertEqual(weather_feed.observation_snapshot.await_count, 1)
 
     async def test_weather_requests_are_bounded(self):
         self.alert_sources(incidents=[{**self.fire(), "id": str(i)} for i in range(20)])
@@ -178,9 +178,9 @@ class AlertTests(BackendTest):
             peak = max(peak, active)
             await asyncio.sleep(0)
             active -= 1
-            return {"wind_speed_mph": 0, "wind_direction_deg": None}
+            return Snapshot({"wind_speed_mph": 0, "wind_direction_deg": None}, "")
 
-        weather_feed.get_weather.side_effect = weather
+        weather_feed.observation_snapshot.side_effect = weather
         await alerts.get_alerts()
         self.assertLessEqual(peak, 8)
 

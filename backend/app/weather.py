@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from . import config
-from .cache import LoadedData, cached, new_cache
+from .cache import LoadedData, Snapshot, new_cache, refresh
 from .util import UpstreamError, finite_number, mapping, utc_stamp
 
 logger = logging.getLogger("wildfire-tracker")
@@ -121,13 +121,10 @@ async def nws_json(client, url):
     return data
 
 
-@router.get("/api/weather")
-async def get_weather(
-    latitude: float = Query(..., description="Latitude coordinate"),
-    longitude: float = Query(..., description="Longitude coordinate"),
-    response: Response = None,
-):
-    if not (35.0 <= latitude <= 45.0 and -116.0 <= longitude <= -107.0):
+async def observation_snapshot(latitude: float, longitude: float) -> Snapshot:
+    """Latest usable station observation near a point; shared by the route and the alert engine."""
+    west, south, east, north = config.WEATHER_BOUNDS
+    if not (south <= latitude <= north and west <= longitude <= east):
         raise HTTPException(status_code=400, detail="Coordinates must be within or near the Utah region boundary.")
     cache_key = f"{latitude:.3f},{longitude:.3f}"
     if cache_key not in weather_cache:
@@ -177,4 +174,13 @@ async def get_weather(
                     logger.warning("Invalid/unavailable observation at station %s; trying next station.", station_id)
             raise UpstreamError("Failed to fetch valid meteorological observations from any nearby station.")
 
-    return await cached(entry, load, response, ttl=300)
+    return await refresh(entry, load, ttl=300)
+
+
+@router.get("/api/weather")
+async def get_weather(
+    latitude: float = Query(..., description="Latitude coordinate"),
+    longitude: float = Query(..., description="Longitude coordinate"),
+    response: Response = None,
+):
+    return (await observation_snapshot(latitude, longitude)).send(response)

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from app import alerts, arcgis, boundaries, config, feeds, main, util
 from app import weather as weather_feed
+from app.cache import Snapshot
 
 from .support import BackendTest, boundary_feature, collection
 
@@ -99,14 +100,20 @@ class StartupTests(BackendTest):
             self.replace(boundaries, "muni_boundaries", [])
             self.replace(
                 feeds,
-                "get_incidents",
-                AsyncMock(return_value=[{"id": "fire-1", "name": "Test Fire", "latitude": 40.0, "longitude": -111.0}]),
+                "incidents_snapshot",
+                AsyncMock(
+                    return_value=Snapshot(
+                        [{"id": "fire-1", "name": "Test Fire", "latitude": 40.0, "longitude": -111.0}], ""
+                    )
+                ),
             )
             self.replace(
                 weather_feed,
-                "get_weather",
+                "observation_snapshot",
                 AsyncMock(
-                    return_value={"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}
+                    return_value=Snapshot(
+                        {"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}, ""
+                    )
                 ),
             )
             fetch = self.replace(

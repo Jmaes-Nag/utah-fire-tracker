@@ -90,143 +90,136 @@ def merge_alerts(previous, current):
     )
 
 
+CAP_QUERY = {
+    "where": "countryCode='us' AND (event LIKE '%Wildfire%' OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
+    "outFields": "*",
+    "outSR": "4326",
+    "f": "json",
+}
+CAP_FIELDS = ("event", "headline", "description", "instruction", "severity", "urgency", "expires")
+WEATHER_CONCURRENCY = 8
+WEATHER_TIMEOUT_SECS = 12
+
+
+async def cap_warnings():
+    """Active CAP warnings and whether the feed failed (a failure degrades the refresh)."""
+    try:
+        return parse_cap(await arcgis.fetch_arcgis(config.CAP_URL, CAP_QUERY, timeout=10)), False
+    except (httpx.RequestError, UpstreamError, ValueError):
+        logger.warning("CAP warnings unavailable; alert refresh is degraded.")
+        return [], True
+
+
+def city_alert(cities, muni):
+    return cities.setdefault(
+        muni["name"],
+        {
+            "city": muni["name"],
+            "object_id": muni["object_id"],
+            "fips": muni["fips"],
+            "risk_level": 1,
+            "risk_level_text": "Ready",
+            "centroid": muni["centroid"],
+            "fires": [],
+            "fema_alerts": [],
+        },
+    )
+
+
+def add_fire_risk(cities, incident, weather):
+    """Ready for cities in the downwind corridor, Set for those within the base radius."""
+    speed = weather.get("wind_speed_mph", 0.0) if weather else 0.0
+    direction = weather.get("wind_direction_deg") if weather else None
+    cardinal = weather.get("wind_direction_cardinal", "N/A") if weather else "N/A"
+    lat, lon = incident["latitude"], incident["longitude"]
+    base, plume, miles_per_lon, miles_per_lat = threat_geometry(lat, lon, speed, direction)
+    for muni in boundaries.muni_boundaries:
+        if not plume.intersects(muni["geometry"]):
+            continue
+        record = city_alert(cities, muni)
+        if base.intersects(muni["geometry"]):
+            record.update(risk_level=2, risk_level_text="Set")
+        local_city = scale(
+            translate(muni["geometry"], xoff=-lon, yoff=-lat),
+            xfact=miles_per_lon,
+            yfact=miles_per_lat,
+            origin=(0, 0),
+        )
+        if not any(fire["id"] == incident["id"] for fire in record["fires"]):
+            record["fires"].append(
+                {
+                    "name": incident["name"],
+                    "id": incident["id"],
+                    "distance_miles": round(Point(0, 0).distance(local_city), 1),
+                    "wind_speed_mph": speed,
+                    "wind_direction": cardinal,
+                    "wind_direction_deg": direction,
+                }
+            )
+
+
+def add_cap_warnings(cities, warnings):
+    for muni in boundaries.muni_boundaries:
+        for warning in warnings:
+            if warning["geometry"].intersects(muni["geometry"]):
+                record = city_alert(cities, muni)
+                record.update(risk_level=2, risk_level_text="Set")
+                record["fema_alerts"].append(
+                    {**{key: warning["attributes"].get(key) for key in CAP_FIELDS}, "rings": warning["rings"]}
+                )
+
+
+async def load_alerts():
+    if not boundaries.muni_boundaries:
+        await boundaries.recover_boundaries()
+    if not boundaries.muni_boundaries:
+        raise UpstreamError("Utah municipal boundaries are unavailable.", status_code=503)
+    try:
+        incidents = await feeds.incidents_snapshot()
+    except HTTPException as exc:
+        raise UpstreamError("Incident data unavailable for alert evaluation.", status_code=503) from exc
+    degraded = incidents.stale
+    dependencies = [feeds.incidents_cache] if feeds.incidents_cache["data"] is not None else []
+    warnings, cap_failed = await cap_warnings()
+    semaphore = asyncio.Semaphore(WEATHER_CONCURRENCY)
+
+    async def fire_weather(incident):
+        async with semaphore:
+            try:
+                observation = await asyncio.wait_for(
+                    weather_feed.observation_snapshot(latitude=incident["latitude"], longitude=incident["longitude"]),
+                    timeout=WEATHER_TIMEOUT_SECS,
+                )
+            except (TimeoutError, HTTPException):
+                return None, True
+            entry = weather_feed.weather_cache.get(f"{incident['latitude']:.3f},{incident['longitude']:.3f}")
+            if entry is not None:
+                dependencies.append(entry)
+            return observation.data, observation.stale
+
+    weather_results = await asyncio.gather(*(fire_weather(incident) for incident in incidents.data))
+    cities = {}
+    for incident, (weather, weather_stale) in zip(incidents.data, weather_results, strict=True):
+        degraded = degraded or weather_stale
+        add_fire_risk(cities, incident, weather)
+    add_cap_warnings(cities, warnings)
+    result = sorted(
+        cities.values(),
+        key=lambda item: (-item["risk_level"], min((fire["distance_miles"] for fire in item["fires"]), default=999)),
+    )
+    if degraded or cap_failed:
+        if alerts_cache["data"] is not None:
+            result = merge_alerts(alerts_cache["data"], result)
+        raise UpstreamError("Alert dependencies are unavailable or stale.", status_code=503, partial=result)
+    completed = time.time()
+    # A derived alert must never appear newer, or stay fresh longer, than its inputs.
+    return LoadedData(
+        result,
+        min([completed + config.CACHE_DURATION_SECS] + [entry["expiry"] for entry in dependencies]),
+        min([utc_stamp(completed)] + [entry["created_at"] for entry in dependencies if entry["created_at"]]),
+    )
+
+
 @router.get("/api/alerts")
 async def get_alerts(response: Response = None):
-    async def load():
-        if not boundaries.muni_boundaries:
-            await boundaries.recover_boundaries()
-        if not boundaries.muni_boundaries:
-            raise UpstreamError("Utah municipal boundaries are unavailable.", status_code=503)
-        incident_response = Response()
-        try:
-            incidents = await feeds.get_incidents(response=incident_response)
-        except HTTPException as exc:
-            raise UpstreamError("Incident data unavailable for alert evaluation.", status_code=503) from exc
-        degraded = incident_response.headers.get("X-Data-Stale") == "true"
-        dependencies = [feeds.incidents_cache] if feeds.incidents_cache["data"] is not None else []
-        cap_failed = False
-        try:
-            raw = await arcgis.fetch_arcgis(
-                config.CAP_URL,
-                {
-                    "where": "countryCode='us' AND (event LIKE '%Wildfire%' "
-                    "OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
-                    "outFields": "*",
-                    "outSR": "4326",
-                    "f": "json",
-                },
-                timeout=10,
-            )
-            parsed_fema = parse_cap(raw)
-        except (httpx.RequestError, UpstreamError, ValueError):
-            logger.warning("CAP warnings unavailable; alert refresh is degraded.")
-            cap_failed, parsed_fema = True, []
-        semaphore = asyncio.Semaphore(8)
-
-        async def fire_weather(incident):
-            async with semaphore:
-                weather_response = Response()
-                try:
-                    weather = await asyncio.wait_for(
-                        weather_feed.get_weather(
-                            latitude=incident["latitude"], longitude=incident["longitude"], response=weather_response
-                        ),
-                        timeout=12,
-                    )
-                    entry = weather_feed.weather_cache.get(f"{incident['latitude']:.3f},{incident['longitude']:.3f}")
-                    if entry is not None:
-                        dependencies.append(entry)
-                    return weather, weather_response.headers.get("X-Data-Stale") == "true"
-                except (TimeoutError, HTTPException):
-                    return None, True
-
-        weather_results = await asyncio.gather(*(fire_weather(incident) for incident in incidents))
-        alerts = {}
-
-        def city_alert(muni):
-            return alerts.setdefault(
-                muni["name"],
-                {
-                    "city": muni["name"],
-                    "object_id": muni["object_id"],
-                    "fips": muni["fips"],
-                    "risk_level": 1,
-                    "risk_level_text": "Ready",
-                    "centroid": muni["centroid"],
-                    "fires": [],
-                    "fema_alerts": [],
-                },
-            )
-
-        for incident, (weather, weather_stale) in zip(incidents, weather_results, strict=True):
-            degraded = degraded or weather_stale
-            speed = weather.get("wind_speed_mph", 0.0) if weather else 0.0
-            direction = weather.get("wind_direction_deg") if weather else None
-            cardinal = weather.get("wind_direction_cardinal", "N/A") if weather else "N/A"
-            lat, lon = incident["latitude"], incident["longitude"]
-            base, plume, miles_per_lon, miles_per_lat = threat_geometry(lat, lon, speed, direction)
-            for muni in boundaries.muni_boundaries:
-                if not plume.intersects(muni["geometry"]):
-                    continue
-                record = city_alert(muni)
-                if base.intersects(muni["geometry"]):
-                    record.update(risk_level=2, risk_level_text="Set")
-                local_city = scale(
-                    translate(muni["geometry"], xoff=-lon, yoff=-lat),
-                    xfact=miles_per_lon,
-                    yfact=miles_per_lat,
-                    origin=(0, 0),
-                )
-                if not any(fire["id"] == incident["id"] for fire in record["fires"]):
-                    record["fires"].append(
-                        {
-                            "name": incident["name"],
-                            "id": incident["id"],
-                            "distance_miles": round(Point(0, 0).distance(local_city), 1),
-                            "wind_speed_mph": speed,
-                            "wind_direction": cardinal,
-                            "wind_direction_deg": direction,
-                        }
-                    )
-        for muni in boundaries.muni_boundaries:
-            for warning in parsed_fema:
-                if warning["geometry"].intersects(muni["geometry"]):
-                    record = city_alert(muni)
-                    record.update(risk_level=2, risk_level_text="Set")
-                    record["fema_alerts"].append(
-                        {
-                            **{
-                                key: warning["attributes"].get(key)
-                                for key in (
-                                    "event",
-                                    "headline",
-                                    "description",
-                                    "instruction",
-                                    "severity",
-                                    "urgency",
-                                    "expires",
-                                )
-                            },
-                            "rings": warning["rings"],
-                        }
-                    )
-        result = sorted(
-            alerts.values(),
-            key=lambda item: (
-                -item["risk_level"],
-                min((fire["distance_miles"] for fire in item["fires"]), default=999),
-            ),
-        )
-        if degraded or cap_failed:
-            if alerts_cache["data"] is not None:
-                result = merge_alerts(alerts_cache["data"], result)
-            raise UpstreamError("Alert dependencies are unavailable or stale.", status_code=503, partial=result)
-        completed = time.time()
-        # A derived alert must never appear newer, or stay fresh longer, than its inputs.
-        return LoadedData(
-            result,
-            min([completed + config.CACHE_DURATION_SECS] + [entry["expiry"] for entry in dependencies]),
-            min([utc_stamp(completed)] + [entry["created_at"] for entry in dependencies if entry["created_at"]]),
-        )
-
-    return await cached(alerts_cache, load, response)
+    return await cached(alerts_cache, load_alerts, response)

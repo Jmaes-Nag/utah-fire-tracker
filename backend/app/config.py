@@ -19,6 +19,8 @@ BOUNDARIES_PATH = Path(__file__).resolve().parent / "data" / "utah_municipal_bou
 ALLOWED_NWS_HOSTS = {"api.weather.gov"}
 # West, south, east, north: an approximate envelope, not the exact state boundary.
 UTAH_BOUNDS = (-114.05, 37.0, -109.05, 42.0)
+# Wider box accepted for weather lookups, so fires near the border still get observations.
+WEATHER_BOUNDS = (-116.0, 35.0, -107.0, 45.0)
 CACHE_DURATION_SECS = 15 * 60
 RETRY_BACKOFF_SECS = 30
 BOUNDARY_MAX_BACKOFF_SECS = CACHE_DURATION_SECS

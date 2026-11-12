@@ -28,24 +28,37 @@ class LoadedData:
     incomplete: bool = False
 
 
-def set_data_headers(response, entry, stale=False):
-    if response is not None:
-        response.headers["X-Data-Timestamp"] = entry.get("created_at", "")
-        response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-        if stale:
-            response.headers["X-Data-Stale"] = "true"
-        elif "X-Data-Stale" in response.headers:
-            del response.headers["X-Data-Stale"]
+@dataclass
+class Snapshot:
+    """What a cache entry serves: the payload plus the freshness the client must be told."""
+
+    data: Any
+    created_at: str
+    stale: bool = False
+
+    def send(self, response):
+        """Write the freshness headers onto an HTTP response and return the payload."""
+        if response is not None:
+            response.headers["X-Data-Timestamp"] = self.created_at
+            if self.stale:
+                response.headers["X-Data-Stale"] = "true"
+            elif "X-Data-Stale" in response.headers:
+                del response.headers["X-Data-Stale"]
+        return self.data
 
 
 async def cached(entry, loader, response=None, ttl=config.CACHE_DURATION_SECS):
+    """Serve an entry's payload and write its freshness headers onto the response."""
+    return (await refresh(entry, loader, ttl)).send(response)
+
+
+async def refresh(entry, loader, ttl=config.CACHE_DURATION_SECS) -> Snapshot:
     """Coalesce refreshes, including failed refreshes; never renew stale data's age."""
     lock = entry.setdefault("lock", asyncio.Lock())
     async with lock:
         now = time.time()
         if entry["data"] is not None and now < entry["expiry"]:
-            set_data_headers(response, entry, stale=entry.get("incomplete", False))
-            return entry["data"]
+            return Snapshot(entry["data"], entry.get("created_at", ""), stale=entry.get("incomplete", False))
         if now >= entry.get("retry_after", 0):
             try:
                 data = await loader()
@@ -73,15 +86,13 @@ async def cached(entry, loader, response=None, ttl=config.CACHE_DURATION_SECS):
                 entry.update(data=data, expiry=expiry, created_at=created_at, incomplete=incomplete)
                 entry.pop("failure", None)
                 entry.pop("retry_after", None)
-                set_data_headers(response, entry, stale=incomplete or completed >= expiry)
-                return data
+                return Snapshot(data, created_at, stale=incomplete or completed >= expiry)
         if entry["data"] is not None:
-            set_data_headers(response, entry, stale=True)
             failure = entry.get("failure")
-            return failure.partial if failure and failure.partial is not None else entry["data"]
+            data = failure.partial if failure and failure.partial is not None else entry["data"]
+            return Snapshot(data, entry.get("created_at", ""), stale=True)
         failure = entry["failure"]
         if failure.partial is not None:
             # Cold-start degraded alerts are visible but never cached as a fresh all-clear.
-            set_data_headers(response, {"created_at": entry["failure_created_at"]}, stale=True)
-            return failure.partial
+            return Snapshot(failure.partial, entry["failure_created_at"], stale=True)
         raise HTTPException(status_code=failure.status_code, detail=str(failure))

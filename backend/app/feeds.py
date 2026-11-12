@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Response
 
 from . import arcgis, config
-from .cache import LoadedData, cached, new_cache
+from .cache import LoadedData, Snapshot, cached, new_cache, refresh
 from .geometry import UTAH_ENVELOPE, arcgis_polygon, polygon_geometry, utah_point
 from .util import UpstreamError, finite_number, mapping, utc_stamp
 
@@ -48,8 +48,9 @@ def active_wildfire(attributes, prefix=""):
     return out is None or out <= 0
 
 
-@router.get("/api/incidents")
-async def get_incidents(response: Response = None):
+async def incidents_snapshot() -> Snapshot:
+    """Active Utah wildfires with their freshness; shared by the route and the alert engine."""
+
     async def load():
         raw = await arcgis.fetch_arcgis(
             config.NIFC_API_URL,
@@ -87,7 +88,12 @@ async def get_incidents(response: Response = None):
             raise UpstreamError("Incident feed contains unusable records; refusing an incomplete snapshot.")
         return cleaned
 
-    return await cached(incidents_cache, load, response)
+    return await refresh(incidents_cache, load)
+
+
+@router.get("/api/incidents")
+async def get_incidents(response: Response = None):
+    return (await incidents_snapshot()).send(response)
 
 
 @router.get("/api/perimeters")
