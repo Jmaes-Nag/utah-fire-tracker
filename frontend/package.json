@@ -1,0 +1,11 @@
+{
+  "name": "utah-fire-tracker-frontend-tools",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write app.js styles.css \"tests/*.cjs\"",
+    "format:check": "prettier --check app.js styles.css \"tests/*.cjs\""
+  },
+  "devDependencies": {
+    "prettier": "3.10.1"
+  }
+}
