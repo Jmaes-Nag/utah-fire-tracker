@@ -1,16 +1,17 @@
 """Offline regression tests for production failure paths and API contracts."""
+
 import asyncio
-from copy import deepcopy
-from datetime import datetime, timezone, timedelta
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException, Response
 import httpx
-from shapely.geometry import Point, Polygon, box
+from fastapi import HTTPException, Response
+from shapely.geometry import Point, box
 
 from app import main
 
@@ -26,8 +27,11 @@ def ring(lon=-111.0, lat=40.0, size=0.01):
 
 
 def boundary_feature():
-    return {"type": "Feature", "properties": {"NAME": "Test City", "OBJECTID": 1, "FIPS": "123"},
-            "geometry": {"type": "Polygon", "coordinates": [ring()]}}
+    return {
+        "type": "Feature",
+        "properties": {"NAME": "Test City", "OBJECTID": 1, "FIPS": "123"},
+        "geometry": {"type": "Polygon", "coordinates": [ring()]},
+    }
 
 
 def collection(features):
@@ -35,10 +39,15 @@ def collection(features):
 
 
 def observation(speed="36", direction="180", unit="wmoUnit:km_h-1"):
-    return {"properties": {"windSpeed": {"value": speed, "unitCode": unit},
-                           "windDirection": {"value": direction},
-                           "temperature": {"value": "20", "unitCode": "wmoUnit:degC"},
-                           "relativeHumidity": {"value": "25"}, "timestamp": datetime.now(timezone.utc).isoformat()}}
+    return {
+        "properties": {
+            "windSpeed": {"value": speed, "unitCode": unit},
+            "windDirection": {"value": direction},
+            "temperature": {"value": "20", "unitCode": "wmoUnit:degC"},
+            "relativeHumidity": {"value": "25"},
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+    }
 
 
 class BackendTest(unittest.IsolatedAsyncioTestCase):
@@ -63,6 +72,7 @@ class BackendTest(unittest.IsolatedAsyncioTestCase):
     def transport(self, handler):
         def factory(**kwargs):
             return HTTP_CLIENT(transport=httpx.MockTransport(handler), **kwargs)
+
         patcher = patch.object(main.httpx, "AsyncClient", side_effect=factory)
         self.patches.append(patcher)
         patcher.start()
@@ -76,14 +86,22 @@ class FeedCacheTests(BackendTest):
     endpoints = ("incidents", "perimeters", "hotspots", "smoke", "aqi")
 
     def entry(self, endpoint):
-        return getattr(main, "cache" if endpoint == "incidents" else
-                       "perimeter_cache" if endpoint == "perimeters" else endpoint + "_cache")
+        return getattr(
+            main,
+            "cache"
+            if endpoint == "incidents"
+            else "perimeter_cache"
+            if endpoint == "perimeters"
+            else endpoint + "_cache",
+        )
 
     async def test_fresh_incident_response_has_exposed_timestamp_and_no_stale(self):
         calls = []
+
         def handler(request):
             calls.append(request)
             return httpx.Response(200, json={"features": [arc_feature(UniqueFireIdentifier="fire-1")]})
+
         self.transport(handler)
         first = await self.api("/api/incidents")
         second = await self.api("/api/incidents")
@@ -125,10 +143,12 @@ class FeedCacheTests(BackendTest):
 
     async def test_cold_transport_failures_are_503_and_coalesced(self):
         calls = []
+
         async def handler(request):
             calls.append(request)
             await asyncio.sleep(0)
             raise httpx.ConnectError("offline", request=request)
+
         self.transport(handler)
         results = await asyncio.gather(*(self.api("/api/incidents") for _ in range(20)))
         self.assertEqual({result.status_code for result in results}, {503})
@@ -136,10 +156,12 @@ class FeedCacheTests(BackendTest):
 
     async def test_concurrent_refreshes_are_single_flight(self):
         calls = []
+
         async def handler(request):
             calls.append(request)
             await asyncio.sleep(0)
             return httpx.Response(200, json={"features": [arc_feature()]})
+
         self.transport(handler)
         results = await asyncio.gather(*(main.get_incidents(Response()) for _ in range(20)))
         self.assertEqual(len(calls), 1)
@@ -147,9 +169,11 @@ class FeedCacheTests(BackendTest):
 
     async def test_empty_feed_is_valid_and_cached(self):
         calls = []
+
         def handler(request):
             calls.append(request)
             return httpx.Response(200, json=collection([]))
+
         self.transport(handler)
         for endpoint in self.endpoints:
             for _ in range(2):
@@ -160,9 +184,11 @@ class FeedCacheTests(BackendTest):
 
     async def test_refresh_ttl_begins_after_download_finishes(self):
         clock = [1000.0]
+
         async def load():
             clock[0] = 1100.0
             return []
+
         with patch.object(main.time, "time", side_effect=lambda: clock[0]):
             await main.cached(main.cache, load)
         self.assertEqual(main.cache["expiry"], 1100 + main.CACHE_DURATION_SECS)
@@ -180,9 +206,11 @@ class FeedCacheTests(BackendTest):
 
     async def test_cancelled_refresh_does_not_poison_lock_or_cache(self):
         started = asyncio.Event()
+
         async def blocked():
             started.set()
             await asyncio.Event().wait()
+
         task = asyncio.create_task(main.cached(main.cache, blocked))
         await started.wait()
         task.cancel()
@@ -192,11 +220,13 @@ class FeedCacheTests(BackendTest):
 
     async def test_smoke_transport_failure_tries_replica(self):
         calls = []
+
         def handler(request):
             calls.append(str(request.url))
             if len(calls) == 1:
                 raise httpx.ReadTimeout("primary timed out", request=request)
             return httpx.Response(200, json={"features": [{"attributes": {"FID": 0}, "geometry": {"rings": [ring()]}}]})
+
         self.transport(handler)
         result = await self.api("/api/smoke")
         self.assertEqual(result.status_code, 200)
@@ -206,9 +236,11 @@ class FeedCacheTests(BackendTest):
 
     async def test_smoke_both_services_fail_does_not_cache_all_clear(self):
         calls = []
+
         def handler(request):
             calls.append(request)
             return httpx.Response(200, json={"error": "failed"})
+
         self.transport(handler)
         result = await self.api("/api/smoke")
         self.assertEqual(result.status_code, 502)
@@ -217,32 +249,43 @@ class FeedCacheTests(BackendTest):
 
     async def test_arcgis_pagination_includes_all_records(self):
         offsets = []
+
         def handler(request):
             offset = request.url.params.get("resultOffset")
             offsets.append(offset)
-            return httpx.Response(200, json={"features": [arc_feature(OBJECTID=1 if offset is None else 2)],
-                                              "exceededTransferLimit": offset is None})
+            return httpx.Response(
+                200,
+                json={
+                    "features": [arc_feature(OBJECTID=1 if offset is None else 2)],
+                    "exceededTransferLimit": offset is None,
+                },
+            )
+
         self.transport(handler)
         result = await main.get_incidents()
         self.assertEqual([item["object_id"] for item in result], [1, 2])
         self.assertEqual(offsets, [None, "1"])
 
     async def test_arcgis_repeated_page_is_rejected(self):
-        self.transport(lambda request: httpx.Response(200, json={
-            "features": [arc_feature()], "exceededTransferLimit": True}))
+        self.transport(
+            lambda request: httpx.Response(200, json={"features": [arc_feature()], "exceededTransferLimit": True})
+        )
         result = await self.api("/api/incidents")
         self.assertEqual(result.status_code, 502)
         self.assertIsNone(main.cache["data"])
 
     async def test_geojson_pagination_reads_nested_transfer_limit(self):
         offsets = []
+
         def handler(request):
             offset = request.url.params.get("resultOffset")
             offsets.append(offset)
             feature = boundary_feature()
             feature["id"] = len(offsets)
-            return httpx.Response(200, json={**collection([feature]),
-                                              "properties": {"exceededTransferLimit": offset is None}})
+            return httpx.Response(
+                200, json={**collection([feature]), "properties": {"exceededTransferLimit": offset is None}}
+            )
+
         self.transport(handler)
         result = await main.get_perimeters()
         self.assertEqual(len(result["features"]), 2)
@@ -283,9 +326,12 @@ class FeedValidationTests(BackendTest):
                 self.assertNotIn("X-Data-Stale", recovered.headers)
 
     async def test_incidents_filter_prescribed_and_out_fires_preserve_complexes_unknown(self):
-        features = [arc_feature(OBJECTID=i, IncidentTypeCategory=category, FireOutDateTime=out)
-                    for i, (category, out) in enumerate([
-                        ("RX", None), ("WF", 1700000000000), ("WF", None), ("CX", None), (None, None), ("WF", 0)])]
+        features = [
+            arc_feature(OBJECTID=i, IncidentTypeCategory=category, FireOutDateTime=out)
+            for i, (category, out) in enumerate(
+                [("RX", None), ("WF", 1700000000000), ("WF", None), ("CX", None), (None, None), ("WF", 0)]
+            )
+        ]
         self.transport(lambda request: httpx.Response(200, json={"features": features}))
         result = await main.get_incidents()
         self.assertEqual([item["object_id"] for item in result], [2, 3, 4, 5])
@@ -305,20 +351,43 @@ class FeedValidationTests(BackendTest):
             features.append(feature)
         self.transport(lambda request: httpx.Response(200, json=collection(features)))
         result = await main.get_perimeters()
-        self.assertEqual([feature["properties"]["attr_IncidentTypeCategory"] for feature in result["features"]], ["WF", "CX"])
+        self.assertEqual(
+            [feature["properties"]["attr_IncidentTypeCategory"] for feature in result["features"]], ["WF", "CX"]
+        )
 
     async def test_mixed_incident_records_reject_incomplete_refresh(self):
-        features = [None, {}, {"attributes": None, "geometry": None}, arc_feature(lon="NaN"),
-                    arc_feature(lon=999), arc_feature(lon=-120), arc_feature(POOState="US-CA"),
-                    arc_feature(lon="-111", lat="40", IncidentSize="123.4", PercentContained="nan", UniqueFireIdentifier="ok")]
+        features = [
+            None,
+            {},
+            {"attributes": None, "geometry": None},
+            arc_feature(lon="NaN"),
+            arc_feature(lon=999),
+            arc_feature(lon=-120),
+            arc_feature(POOState="US-CA"),
+            arc_feature(lon="-111", lat="40", IncidentSize="123.4", PercentContained="nan", UniqueFireIdentifier="ok"),
+        ]
         self.transport(lambda request: httpx.Response(200, json={"features": features}))
         result = await self.api("/api/incidents")
         self.assertEqual(result.status_code, 502)
         self.assertIsNone(main.cache["data"])
 
     async def test_incidents_normalize_finite_numbers(self):
-        self.transport(lambda request: httpx.Response(200, json={"features": [
-            arc_feature(lon="-111", lat="40", IncidentSize="123.4", PercentContained="nan", UniqueFireIdentifier="ok")]}))
+        self.transport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "features": [
+                        arc_feature(
+                            lon="-111",
+                            lat="40",
+                            IncidentSize="123.4",
+                            PercentContained="nan",
+                            UniqueFireIdentifier="ok",
+                        )
+                    ]
+                },
+            )
+        )
         result = await self.api("/api/incidents")
         self.assertEqual(result.status_code, 200)
         self.assertEqual(len(result.json()), 1)
@@ -341,15 +410,22 @@ class FeedValidationTests(BackendTest):
                 self.assertEqual((await self.api("/api/" + endpoint)).status_code, 502)
 
     async def test_nonfinite_json_metadata_cannot_break_serialization(self):
-        self.transport(lambda request: httpx.Response(200, text='{"features":[{"attributes":{"OBJECTID":NaN},"geometry":{"x":-111,"y":40}}]}'))
+        self.transport(
+            lambda request: httpx.Response(
+                200, text='{"features":[{"attributes":{"OBJECTID":NaN},"geometry":{"x":-111,"y":40}}]}'
+            )
+        )
         self.assertEqual((await self.api("/api/incidents")).status_code, 502)
 
     async def test_perimeters_skip_bad_geometry_repair_self_intersection(self):
         valid = boundary_feature()
-        invalid = [{"geometry": None}, {"geometry": {"type": "Point", "coordinates": [-111, 40]}},
-                   {"geometry": {"type": "Polygon", "coordinates": [[[1, 2]]]}}]
+        invalid = [
+            {"geometry": None},
+            {"geometry": {"type": "Point", "coordinates": [-111, 40]}},
+            {"geometry": {"type": "Polygon", "coordinates": [[[1, 2]]]}},
+        ]
         bowtie = deepcopy(valid)
-        bowtie["geometry"]["coordinates"] = [[[-111,40],[-110.9,40.1],[-111,40.1],[-110.9,40],[-111,40]]]
+        bowtie["geometry"]["coordinates"] = [[[-111, 40], [-110.9, 40.1], [-111, 40.1], [-110.9, 40], [-111, 40]]]
         self.transport(lambda request: httpx.Response(200, json=collection(invalid + [valid, bowtie])))
         result = await self.api("/api/perimeters")
         self.assertEqual(result.status_code, 200)
@@ -358,8 +434,11 @@ class FeedValidationTests(BackendTest):
             self.assertTrue(main.shape(feature["geometry"]).is_valid)
 
     async def test_hotspots_skip_nonfinite_and_foreign_points(self):
-        self.transport(lambda request: httpx.Response(200, json={"features": [
-            arc_feature(lon="inf"), arc_feature(lon=-120), arc_feature(FRP="7.5")]}))
+        self.transport(
+            lambda request: httpx.Response(
+                200, json={"features": [arc_feature(lon="inf"), arc_feature(lon=-120), arc_feature(FRP="7.5")]}
+            )
+        )
         result = await self.api("/api/hotspots")
         self.assertEqual(len(result.json()), 1)
         self.assertEqual(result.json()[0]["frp"], 7.5)
@@ -374,8 +453,18 @@ class FeedValidationTests(BackendTest):
         self.assertEqual(result.json()[0]["aqi"], 50)
 
     def test_aqi_current_epa_upper_breakpoints_and_truncation(self):
-        expected = {9.09:50, 9.1:51, 35.49:100, 55.4:150, 125.4:200, 225.4:300,
-                    225.5:301, 325.4:500, 500:500, 1e308:500}
+        expected = {
+            9.09: 50,
+            9.1: 51,
+            35.49: 100,
+            55.4: 150,
+            125.4: 200,
+            225.4: 300,
+            225.5: 301,
+            325.4: 500,
+            500: 500,
+            1e308: 500,
+        }
         for pm25, aqi in expected.items():
             with self.subTest(pm25=pm25):
                 self.assertEqual(main.calculate_pm25_aqi(pm25), aqi)
@@ -392,9 +481,11 @@ class FeedValidationTests(BackendTest):
         self.assertTrue(geom.covers(Point(-110.965, 40.035)))
 
     def test_polygon_rejects_nonfinite_open_and_degenerate_rings(self):
-        for coords in [[[0, 0], [1, 0], [1, 1], [0, 1]],
-                       [[-111,40],[-111,40],[-111,40],[-111,40]],
-                       [[-111,40],[-110,40],[-110,float("nan")],[-111,40]]]:
+        for coords in [
+            [[0, 0], [1, 0], [1, 1], [0, 1]],
+            [[-111, 40], [-111, 40], [-111, 40], [-111, 40]],
+            [[-111, 40], [-110, 40], [-110, float("nan")], [-111, 40]],
+        ]:
             with self.subTest(coords=coords), self.assertRaises(ValueError):
                 main.arcgis_polygon([coords])
 
@@ -402,18 +493,23 @@ class FeedValidationTests(BackendTest):
 class WeatherTests(BackendTest):
     def weather_transport(self, observations):
         self.calls = []
+
         def handler(request):
             self.calls.append(request)
             if "/points/" in request.url.path:
                 payload = {"properties": {"observationStations": "https://api.weather.gov/gridpoints/SLC/1,2/stations"}}
             elif request.url.path.endswith("/stations"):
-                payload = {"features": [{"properties": {"stationIdentifier": station, "name": station}}
-                                        for station in observations]}
+                payload = {
+                    "features": [
+                        {"properties": {"stationIdentifier": station, "name": station}} for station in observations
+                    ]
+                }
             else:
                 payload = observations[request.url.path.split("/")[2]]
                 if isinstance(payload, Exception):
                     raise payload
             return httpx.Response(200, json=payload)
+
         self.transport(handler)
 
     async def test_numeric_strings_and_optional_malformed_values(self):
@@ -431,18 +527,31 @@ class WeatherTests(BackendTest):
         self.assertIn("X-Data-Timestamp", result.headers)
 
     async def test_wind_speed_units_and_calm_missing_direction(self):
-        for unit, speed, expected in [("wmoUnit:km_h-1", 36, 22.4), ("wmoUnit:m_s-1", 10, 22.4),
-                                       ("wmoUnit:mi_h-1", 20, 20.0), ("wmoUnit:kn", 10, 11.5)]:
+        for unit, speed, expected in [
+            ("wmoUnit:km_h-1", 36, 22.4),
+            ("wmoUnit:m_s-1", 10, 22.4),
+            ("wmoUnit:mi_h-1", 20, 20.0),
+            ("wmoUnit:kn", 10, 11.5),
+        ]:
             with self.subTest(unit=unit):
-                self.assertEqual(main.parse_weather(observation(speed, 180, unit)["properties"], "KSLC", "SLC")["wind_speed_mph"], expected)
+                self.assertEqual(
+                    main.parse_weather(observation(speed, 180, unit)["properties"], "KSLC", "SLC")["wind_speed_mph"],
+                    expected,
+                )
         data = main.parse_weather(observation(0, None)["properties"], "KSLC", "SLC")
         self.assertEqual(data["wind_speed_mph"], 0)
         self.assertIsNone(data["wind_direction_deg"])
         self.assertEqual(data["wind_direction_cardinal"], "N/A")
 
     async def test_station_fallback_after_bad_units_nonfinite_or_network_failure(self):
-        for first in [observation(unit="mystery"), observation(speed="nan"), observation(direction="bad"),
-                      observation(speed=-1), observation(direction=361), httpx.ReadTimeout("timeout")]:
+        for first in [
+            observation(unit="mystery"),
+            observation(speed="nan"),
+            observation(direction="bad"),
+            observation(speed=-1),
+            observation(direction=361),
+            httpx.ReadTimeout("timeout"),
+        ]:
             with self.subTest(first=str(first)[:40]):
                 main.weather_cache.clear()
                 self.weather_transport({"BAD": first, "GOOD": observation(10, 270, "wmoUnit:m_s-1")})
@@ -460,7 +569,10 @@ class WeatherTests(BackendTest):
 
     async def test_weather_outage_preserves_stale_value_and_observation_timestamp(self):
         main.weather_cache["40.000,-111.000"] = {
-            "data": {"station_id": "OLD", "timestamp": "original"}, "expiry": 0, "created_at": "original"}
+            "data": {"station_id": "OLD", "timestamp": "original"},
+            "expiry": 0,
+            "created_at": "original",
+        }
         self.transport(lambda request: httpx.Response(200, text="invalid json"))
         response = await self.api("/api/weather?latitude=40&longitude=-111")
         self.assertEqual(response.status_code, 200)
@@ -469,8 +581,12 @@ class WeatherTests(BackendTest):
         self.assertEqual(response.json()["timestamp"], "original")
 
     async def test_old_missing_future_and_naive_observations_try_next_station(self):
-        timestamps = [(datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(), None,
-                      (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), "2026-11-11T12:00:00"]
+        timestamps = [
+            (datetime.now(UTC) - timedelta(hours=3)).isoformat(),
+            None,
+            (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            "2026-11-11T12:00:00",
+        ]
         for timestamp in timestamps:
             with self.subTest(timestamp=timestamp):
                 main.weather_cache.clear()
@@ -482,27 +598,40 @@ class WeatherTests(BackendTest):
 
     async def test_weather_freshness_uses_observation_time_and_caps_expiry(self):
         payload = observation()
-        observed = datetime.now(timezone.utc) - timedelta(seconds=main.MAX_OBSERVATION_AGE_SECS - 30)
+        observed = datetime.now(UTC) - timedelta(seconds=main.MAX_OBSERVATION_AGE_SECS - 30)
         payload["properties"]["timestamp"] = observed.isoformat()
         self.weather_transport({"KSLC": payload})
         result = await self.api("/api/weather?latitude=40&longitude=-111")
         self.assertEqual(result.headers["X-Data-Timestamp"], observed.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        self.assertAlmostEqual(main.weather_cache["40.000,-111.000"]["expiry"],
-                               observed.timestamp() + main.MAX_OBSERVATION_AGE_SECS, places=3)
+        self.assertAlmostEqual(
+            main.weather_cache["40.000,-111.000"]["expiry"],
+            observed.timestamp() + main.MAX_OBSERVATION_AGE_SECS,
+            places=3,
+        )
 
     async def test_disallowed_station_link_is_not_fetched(self):
         calls = []
+
         def handler(request):
             calls.append(request)
             return httpx.Response(200, json={"properties": {"observationStations": "http://169.254.169.254/latest"}})
+
         self.transport(handler)
         self.assertEqual((await self.api("/api/weather?latitude=40&longitude=-111")).status_code, 502)
         self.assertEqual(len(calls), 1)
 
     def test_url_allowlist_rejects_credentials_ports_nonstring_and_malformed(self):
         self.assertTrue(main.is_allowed_nws_url("https://api.weather.gov/stations"))
-        for url in [None, 123, "http://api.weather.gov/", "https://api.weather.gov.evil/", "https://user@api.weather.gov/",
-                    "https://api.weather.gov:444/", "https://api.weather.gov:bad/", "https://[bad"]:
+        for url in [
+            None,
+            123,
+            "http://api.weather.gov/",
+            "https://api.weather.gov.evil/",
+            "https://user@api.weather.gov/",
+            "https://api.weather.gov:444/",
+            "https://api.weather.gov:bad/",
+            "https://[bad",
+        ]:
             with self.subTest(url=url):
                 self.assertFalse(main.is_allowed_nws_url(url))
 
@@ -525,8 +654,13 @@ class AlertTests(BackendTest):
     def alert_sources(self, incidents=None, warnings=None, weather=None):
         self.replace("get_incidents", AsyncMock(return_value=incidents or []))
         self.replace("fetch_arcgis", AsyncMock(return_value={"features": warnings or []}))
-        self.replace("get_weather", AsyncMock(return_value=weather or {
-            "wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}))
+        self.replace(
+            "get_weather",
+            AsyncMock(
+                return_value=weather
+                or {"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}
+            ),
+        )
 
     def fire(self, lon=-111.0, lat=40.0):
         return {"id": "fire-1", "name": "Test Fire", "latitude": lat, "longitude": lon}
@@ -585,9 +719,11 @@ class AlertTests(BackendTest):
 
     async def test_stale_incident_dependency_marks_alerts_stale(self):
         self.alert_sources()
+
         async def stale_incidents(response):
             response.headers["X-Data-Stale"] = "true"
             return [self.fire()]
+
         main.get_incidents.side_effect = stale_incidents
         result = await self.api("/api/alerts")
         self.assertEqual(result.headers["X-Data-Stale"], "true")
@@ -595,9 +731,11 @@ class AlertTests(BackendTest):
 
     async def test_stale_weather_dependency_does_not_clear_prior_plume_warning(self):
         self.alert_sources(incidents=[self.fire()])
+
         async def stale_weather(**kwargs):
             kwargs["response"].headers["X-Data-Stale"] = "true"
             return {"wind_speed_mph": 0, "wind_direction_deg": None}
+
         main.get_weather.side_effect = stale_weather
         main.alerts_cache.update(data=[{"city": "Downwind City"}], created_at="old", expiry=0)
         result = await self.api("/api/alerts")
@@ -606,8 +744,10 @@ class AlertTests(BackendTest):
 
     async def test_wind_corridor_includes_middle_between_distant_endpoints(self):
         main.muni_boundaries[0]["geometry"] = box(-111.005, 40.135, -110.995, 40.145)
-        self.alert_sources(incidents=[self.fire()], weather={
-            "wind_speed_mph": 100, "wind_direction_deg": 180, "wind_direction_cardinal": "S"})
+        self.alert_sources(
+            incidents=[self.fire()],
+            weather={"wind_speed_mph": 100, "wind_direction_deg": 180, "wind_direction_cardinal": "S"},
+        )
         result = await main.get_alerts()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["risk_level"], 1)
@@ -621,17 +761,28 @@ class AlertTests(BackendTest):
         self.assertLess(result[0]["fires"][0]["distance_miles"], 5)
 
     async def test_cap_second_exterior_ring_hits_utah_city(self):
-        self.alert_sources(warnings=[{"attributes": {"event": "Wildfire", "status": "Actual"},
-                                      "geometry": {"rings": [ring(-120, 40), ring()]}}])
+        self.alert_sources(
+            warnings=[
+                {
+                    "attributes": {"event": "Wildfire", "status": "Actual"},
+                    "geometry": {"rings": [ring(-120, 40), ring()]},
+                }
+            ]
+        )
         result = await main.get_alerts()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["risk_level"], 2)
         self.assertEqual(len(result[0]["fema_alerts"]), 1)
 
     def test_expired_test_cancelled_future_cap_records_are_ignored(self):
-        attributes = [{"expires": "2000-01-01T00:00:00Z"}, {"expires": 1000000000000},
-                      {"status": "Test"}, {"status": "Exercise"}, {"msgType": "Cancel"},
-                      {"effective": "2999-01-01T00:00:00Z"}]
+        attributes = [
+            {"expires": "2000-01-01T00:00:00Z"},
+            {"expires": 1000000000000},
+            {"status": "Test"},
+            {"status": "Exercise"},
+            {"msgType": "Cancel"},
+            {"effective": "2999-01-01T00:00:00Z"},
+        ]
         records = [{"attributes": attrs, "geometry": {"rings": [ring()]}} for attrs in attributes]
         self.assertEqual(main.parse_cap({"features": records}), [])
 
@@ -653,6 +804,7 @@ class AlertTests(BackendTest):
     async def test_weather_requests_are_bounded(self):
         self.alert_sources(incidents=[{**self.fire(), "id": str(i)} for i in range(20)])
         active, peak = 0, 0
+
         async def weather(**kwargs):
             nonlocal active, peak
             active += 1
@@ -660,6 +812,7 @@ class AlertTests(BackendTest):
             await asyncio.sleep(0)
             active -= 1
             return {"wind_speed_mph": 0, "wind_direction_deg": None}
+
         main.get_weather.side_effect = weather
         await main.get_alerts()
         self.assertLessEqual(peak, 8)
@@ -668,8 +821,7 @@ class AlertTests(BackendTest):
         self.alert_sources(incidents=[self.fire()])
         now = main.time.time()
         main.cache.update(data=[self.fire()], expiry=now + 100, created_at="2026-11-11T12:00:00Z")
-        main.weather_cache["40.000,-111.000"] = {
-            "data": {}, "expiry": now + 20, "created_at": "2026-11-11T11:00:00Z"}
+        main.weather_cache["40.000,-111.000"] = {"data": {}, "expiry": now + 20, "created_at": "2026-11-11T11:00:00Z"}
         result = await self.api("/api/alerts")
         self.assertEqual(result.status_code, 200)
         self.assertEqual(main.alerts_cache["expiry"], now + 20)
@@ -764,15 +916,26 @@ class StartupTests(BackendTest):
             path = Path(directory) / "boundaries.geojson"
             self.replace("BOUNDARIES_PATH", path)
             self.replace("muni_boundaries", [])
-            self.replace("get_incidents", AsyncMock(return_value=[
-                {"id": "fire-1", "name": "Test Fire", "latitude": 40.0, "longitude": -111.0}]))
-            self.replace("get_weather", AsyncMock(return_value={
-                "wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}))
-            fetch = self.replace("fetch_arcgis", AsyncMock(side_effect=[
-                main.UpstreamError("startup sgid outage"),
-                collection([boundary_feature()]),
-                {"features": []},
-            ]))
+            self.replace(
+                "get_incidents",
+                AsyncMock(return_value=[{"id": "fire-1", "name": "Test Fire", "latitude": 40.0, "longitude": -111.0}]),
+            )
+            self.replace(
+                "get_weather",
+                AsyncMock(
+                    return_value={"wind_speed_mph": 0, "wind_direction_deg": None, "wind_direction_cardinal": "N/A"}
+                ),
+            )
+            fetch = self.replace(
+                "fetch_arcgis",
+                AsyncMock(
+                    side_effect=[
+                        main.UpstreamError("startup sgid outage"),
+                        collection([boundary_feature()]),
+                        {"features": []},
+                    ]
+                ),
+            )
             await main.startup_event()
             self.assertEqual(main.muni_boundaries, [])
             self.assertEqual(main.boundary_state["failures"], 1)
@@ -832,8 +995,10 @@ class StartupTests(BackendTest):
                 sleeps.append(delay)
                 clock[0] += delay
 
-            with patch.object(main.time, "time", side_effect=lambda: clock[0]), \
-                 patch.object(main.asyncio, "sleep", side_effect=fake_sleep):
+            with (
+                patch.object(main.time, "time", side_effect=lambda: clock[0]),
+                patch.object(main.asyncio, "sleep", side_effect=fake_sleep),
+            ):
                 self.assertFalse(await main.boundary_recovery_loop(max_attempts=3))
                 self.assertEqual(main.fetch_arcgis.await_count, 3)
                 self.assertEqual(sleeps, [30.0, 60.0])

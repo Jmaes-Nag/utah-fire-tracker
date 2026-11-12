@@ -1,8 +1,8 @@
 import importlib.util
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("project_checks", Path(__file__).parents[1] / "check.py")

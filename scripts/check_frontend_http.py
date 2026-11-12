@@ -3,6 +3,7 @@
 Usage: python scripts/check_frontend_http.py http://127.0.0.1:18080
 No live upstream feed is required.
 """
+
 import argparse
 import time
 from urllib.error import HTTPError, URLError
@@ -21,9 +22,13 @@ def check(base, expected_carto=None):
                 raise
             time.sleep(0.2)
 
-    for route, content_type in (("/", "text/html"), ("/sources.html", "text/html"),
-                                ("/map-config.js", "javascript"),
-                                ("/app.js", "javascript"), ("/styles.css", "text/css")):
+    for route, content_type in (
+        ("/", "text/html"),
+        ("/sources.html", "text/html"),
+        ("/map-config.js", "javascript"),
+        ("/app.js", "javascript"),
+        ("/styles.css", "text/css"),
+    ):
         with urlopen(base + route, timeout=3) as response:
             assert content_type in response.headers["Content-Type"], route
             assert response.headers.get("X-Content-Type-Options") == "nosniff", route
@@ -33,11 +38,15 @@ def check(base, expected_carto=None):
             body = response.read()
             assert body, route
             if route == "/map-config.js":
-                assert body in (b"window.MAP_CONFIG = {cartoEnabled: false};",
-                                b"window.MAP_CONFIG = {cartoEnabled: true};"), body
+                assert body in (
+                    b"window.MAP_CONFIG = {cartoEnabled: false};",
+                    b"window.MAP_CONFIG = {cartoEnabled: true};",
+                ), body
                 if expected_carto is not None:
                     expected = b"true" if expected_carto else b"false"
-                    assert body == b"window.MAP_CONFIG = {cartoEnabled: " + expected + b"};", "Wrong basemap configuration"
+                    assert body == b"window.MAP_CONFIG = {cartoEnabled: " + expected + b"};", (
+                        "Wrong basemap configuration"
+                    )
 
     for route in ("/missing.js", "/tiles/not-a-valid-tile.png"):
         try:

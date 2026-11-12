@@ -1,8 +1,8 @@
 import importlib.util
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).parents[1]
@@ -21,9 +21,11 @@ class ContainerCleanupTests(unittest.TestCase):
                 launched.append(args[args.index("--name") + 1])
             return "127.0.0.1:19000" if args[:2] == ("docker", "port") else "test-result"
 
-        with patch.object(checks, "command", side_effect=command), \
-                patch.object(checks, "check", side_effect=AssertionError("bad HTTP headers")), \
-                patch.object(checks.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as cleanup:
+        with (
+            patch.object(checks, "command", side_effect=command),
+            patch.object(checks, "check", side_effect=AssertionError("bad HTTP headers")),
+            patch.object(checks.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as cleanup,
+        ):
             with self.assertRaisesRegex(AssertionError, "bad HTTP headers"):
                 checks.main()
         removed = [call.args[0][-1] for call in cleanup.call_args_list if call.args[0][:3] == ["docker", "rm", "-f"]]
@@ -38,8 +40,10 @@ class ContainerCleanupTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, args)
             return "test-result"
 
-        with patch.object(checks, "command", side_effect=command), \
-                patch.object(checks.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as cleanup:
+        with (
+            patch.object(checks, "command", side_effect=command),
+            patch.object(checks.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as cleanup,
+        ):
             with self.assertRaises(subprocess.CalledProcessError):
                 checks.main()
         self.assertEqual(len(cleanup.call_args_list), 1)

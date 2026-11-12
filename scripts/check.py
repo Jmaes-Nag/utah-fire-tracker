@@ -1,11 +1,12 @@
 """Run repeatable offline checks from any working directory. No .env is loaded."""
+
 import argparse
 import logging
-from pathlib import Path
 import re
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,7 +22,10 @@ def credential_findings(body):
         "private key": r"(?m)^-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
         "GitHub token": r"\b(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b",
         "OpenAI project key": r"\bsk-proj-[A-Za-z0-9_-]{40,}\b",
-        "credential assignment": r'''(?im)^\s*(?:CARTO_API_KEY|AWS_SECRET_ACCESS_KEY|OPENAI_API_KEY|GITHUB_TOKEN|PASSWORD)\s*[=:]\s*["']?([A-Za-z0-9_./+\-=]{12,})''',
+        "credential assignment": (
+            r"(?im)^\s*(?:CARTO_API_KEY|AWS_SECRET_ACCESS_KEY|OPENAI_API_KEY|GITHUB_TOKEN|PASSWORD)"
+            r"""\s*[=:]\s*["']?([A-Za-z0-9_./+\-=]{12,})"""
+        ),
     }
     findings = []
     for label, pattern in patterns.items():
@@ -38,13 +42,18 @@ def credential_findings(body):
 def privacy_check():
     tracked = git_paths("ls-files", "--cached")
     ignored = subprocess.run(
-        ["git", "check-ignore", "--no-index", "--stdin", "-z"], cwd=ROOT,
-        input=("\0".join(tracked) + "\0").encode(), capture_output=True,
+        ["git", "check-ignore", "--no-index", "--stdin", "-z"],
+        cwd=ROOT,
+        input=("\0".join(tracked) + "\0").encode(),
+        capture_output=True,
     )
     if ignored.returncode not in (0, 1):
         raise RuntimeError("Could not verify tracked files against .gitignore")
-    problems = [f"{name}: tracked despite .gitignore (ignoring does not untrack files)"
-                for name in ignored.stdout.decode().split("\0") if name]
+    problems = [
+        f"{name}: tracked despite .gitignore (ignoring does not untrack files)"
+        for name in ignored.stdout.decode().split("\0")
+        if name
+    ]
     candidates = sorted(set(git_paths("ls-files", "--cached", "--others", "--exclude-standard")))
     for name in candidates:
         path = ROOT / name
@@ -60,7 +69,9 @@ def privacy_check():
         problems.extend(f"{name}: possible {label} (value withheld)" for label in credential_findings(body))
     if problems:
         raise RuntimeError("Public-file check failed:\n" + "\n".join(problems))
-    print(f"Public-file check passed ({len(candidates)} tracked/publishable files; ignored files not read).", flush=True)
+    print(
+        f"Public-file check passed ({len(candidates)} tracked/publishable files; ignored files not read).", flush=True
+    )
 
 
 def run(*args):
@@ -108,4 +119,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

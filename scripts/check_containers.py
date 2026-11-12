@@ -3,15 +3,16 @@
 Uses synthetic boundaries and a fake key. Does not load .env or query live feeds.
 Requires a running Docker engine. Published ports bind only to localhost.
 """
+
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
-import uuid
 
 from check_frontend_http import check
 
@@ -19,8 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def command(*args, capture=False):
-    result = subprocess.run(args, cwd=ROOT, check=True, text=True,
-                            stdout=subprocess.PIPE if capture else None)
+    result = subprocess.run(args, cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE if capture else None)
     return result.stdout.strip() if capture else None
 
 
@@ -39,30 +39,78 @@ def main():
             # Record before building so partial success is cleaned up too.
             images.append(image)
             command("docker", "build", "--quiet", "-t", image, f"./{folder}")
-        command("docker", "run", "--rm", "--network", "none", "-v", f"{ROOT / 'backend'}:/tests:ro",
-                "-w", "/tests", backend_image, "python", "-c",
-                'import logging,unittest; logging.disable(logging.CRITICAL); '
-                'r=unittest.TextTestRunner().run(unittest.defaultTestLoader.discover(".",pattern="test_*.py")); '
-                'raise SystemExit(not r.wasSuccessful())')
+        command(
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{ROOT / 'backend'}:/tests:ro",
+            "-w",
+            "/tests",
+            backend_image,
+            "python",
+            "-c",
+            "import logging,unittest; logging.disable(logging.CRITICAL); "
+            'r=unittest.TextTestRunner().run(unittest.defaultTestLoader.discover(".",pattern="test_*.py")); '
+            "raise SystemExit(not r.wasSuccessful())",
+        )
         command("docker", "network", "create", network, capture=True)
         network_created = True
         with tempfile.TemporaryDirectory(prefix="wildfire-check-") as directory:
-            boundaries = {"type": "FeatureCollection", "features": [{"type": "Feature",
-                "properties": {"NAME": "Smoke Check City", "OBJECTID": 1, "FIPS": "00000"},
-                "geometry": {"type": "Polygon", "coordinates": [[[-111, 40], [-110.99, 40],
-                    [-110.99, 40.01], [-111, 40.01], [-111, 40]]]}}]}
+            boundaries = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"NAME": "Smoke Check City", "OBJECTID": 1, "FIPS": "00000"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[-111, 40], [-110.99, 40], [-110.99, 40.01], [-111, 40.01], [-111, 40]]],
+                        },
+                    }
+                ],
+            }
             Path(directory, "utah_municipal_boundaries.geojson").write_text(json.dumps(boundaries))
             backend_name = network + "-backend"
             containers.append(backend_name)
-            command("docker", "run", "-d", "--name", backend_name, "--network", network,
-                    "--network-alias", "backend", "-v", f"{directory}:/app/app/data:ro", backend_image, capture=True)
+            command(
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                backend_name,
+                "--network",
+                network,
+                "--network-alias",
+                "backend",
+                "-v",
+                f"{directory}:/app/app/data:ro",
+                backend_image,
+                capture=True,
+            )
             # Exercise both configuration branches without using or disclosing a real key.
             for enabled in (False, True):
                 name = network + ("-carto" if enabled else "-osm")
                 containers.append(name)
-                command("docker", "run", "-d", "--name", name, "--network", network,
-                        "-p", "127.0.0.1::80", "-e", "PRODUCTION_DOMAIN=_", "-e",
-                        "CARTO_API_KEY=" + ("review-sentinel" if enabled else ""), frontend_image, capture=True)
+                command(
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    name,
+                    "--network",
+                    network,
+                    "-p",
+                    "127.0.0.1::80",
+                    "-e",
+                    "PRODUCTION_DOMAIN=_",
+                    "-e",
+                    "CARTO_API_KEY=" + ("review-sentinel" if enabled else ""),
+                    frontend_image,
+                    capture=True,
+                )
                 command("docker", "exec", name, "nginx", "-t")
                 address = command("docker", "port", name, "80/tcp", capture=True).splitlines()[0]
                 base = "http://" + address
@@ -96,4 +144,4 @@ if __name__ == "__main__":
         main()
     except (OSError, ValueError, AssertionError, subprocess.CalledProcessError) as exc:
         print(f"Container checks failed: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

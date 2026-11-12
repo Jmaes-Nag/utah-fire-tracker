@@ -1,24 +1,24 @@
 import asyncio
-from contextlib import asynccontextmanager
-from copy import deepcopy
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import logging
 import math
 import os
-from pathlib import Path
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-import httpx
 from shapely import make_valid
-from shapely.errors import GEOSException
 from shapely.affinity import scale, translate
+from shapely.errors import GEOSException
 from shapely.geometry import LineString, Point, box, shape
 from shapely.ops import unary_union
 
@@ -42,12 +42,15 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Utah Wildfire and Wind Tracking API", lifespan=lifespan)
-muni_boundaries: List[Dict[str, Any]] = []
+muni_boundaries: list[dict[str, Any]] = []
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
 origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 app.add_middleware(
-    CORSMiddleware, allow_origins=origins, allow_credentials=origins != ["*"],
-    allow_methods=["GET"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=origins != ["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
     expose_headers=["X-Data-Timestamp", "X-Data-Stale"],
 )
 
@@ -59,7 +62,9 @@ SMOKE_URL = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/
 SMOKE_FALLBACK_URL = "https://services2.arcgis.com/r6iFVcMJeA4kB4GC/arcgis/rest/services/NOAA_HMS_Smoke_Detection_Replica/FeatureServer/0/query"
 AQI_URL = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Air_Quality_PM25_Latest_Results/FeatureServer/0/query"
 CAP_URL = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/CAP_Alerts_Feed/FeatureServer/0/query"
-BOUNDARIES_URL = "https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/UtahMunicipalBoundaries/FeatureServer/0/query"
+BOUNDARIES_URL = (
+    "https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/UtahMunicipalBoundaries/FeatureServer/0/query"
+)
 BOUNDARIES_PATH = Path(__file__).resolve().parent / "data" / "utah_municipal_boundaries.geojson"
 ALLOWED_NWS_HOSTS = {"api.weather.gov"}
 UTAH_ENVELOPE = box(-114.05, 37.0, -109.05, 42.0)
@@ -86,7 +91,7 @@ smoke_cache = new_cache()
 aqi_cache = new_cache()
 alerts_cache = new_cache()
 boundary_state = new_boundary_state()
-weather_cache: Dict[str, Any] = {}
+weather_cache: dict[str, Any] = {}
 
 
 class UpstreamError(Exception):
@@ -127,10 +132,15 @@ async def cached(entry, loader, response=None, ttl=CACHE_DURATION_SECS):
                 data = await loader()
             except (UpstreamError, httpx.RequestError, ValueError, TypeError, OverflowError, GEOSException) as exc:
                 logger.warning("Feed refresh failed: %s", exc)
-                entry["failure"] = exc if isinstance(exc, UpstreamError) else UpstreamError(
-                    "Unable to connect to upstream service." if isinstance(exc, httpx.RequestError)
-                    else "Upstream service returned invalid data.",
-                    status_code=503 if isinstance(exc, httpx.RequestError) else 502,
+                entry["failure"] = (
+                    exc
+                    if isinstance(exc, UpstreamError)
+                    else UpstreamError(
+                        "Unable to connect to upstream service."
+                        if isinstance(exc, httpx.RequestError)
+                        else "Upstream service returned invalid data.",
+                        status_code=503 if isinstance(exc, httpx.RequestError) else 502,
+                    )
                 )
                 entry["retry_after"] = time.time() + RETRY_BACKOFF_SECS
                 entry["failure_created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -199,8 +209,12 @@ def polygon_geometry(geometry):
             if not isinstance(ring, list) or len(ring) < 4:
                 raise ValueError("Invalid polygon ring")
             for point in ring:
-                if (not isinstance(point, (list, tuple)) or len(point) not in (2, 3)
-                        or coordinates(*point[:2]) is None or any(finite_number(value) is None for value in point)):
+                if (
+                    not isinstance(point, (list, tuple))
+                    or len(point) not in (2, 3)
+                    or coordinates(*point[:2]) is None
+                    or any(finite_number(value) is None for value in point)
+                ):
                     raise ValueError("Invalid polygon coordinate")
             if ring[0][:2] != ring[-1][:2]:
                 raise ValueError("Unclosed polygon ring")
@@ -280,14 +294,22 @@ def optional_snapshot(features, cleaned, payload=None):
     if len(features) == len(cleaned):
         return data
     now = time.time()
-    return LoadedData(data, now + CACHE_DURATION_SECS,
-                      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), incomplete=True)
+    return LoadedData(
+        data, now + CACHE_DURATION_SECS, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), incomplete=True
+    )
 
 
 def spatial_params(fields, where="1=1"):
-    return {"where": where, "geometryType": "esriGeometryEnvelope",
-            "geometry": "-114.05,37.0,-109.05,42.0", "spatialRel": "esriSpatialRelIntersects",
-            "inSR": "4326", "outSR": "4326", "outFields": fields, "f": "json"}
+    return {
+        "where": where,
+        "geometryType": "esriGeometryEnvelope",
+        "geometry": "-114.05,37.0,-109.05,42.0",
+        "spatialRel": "esriSpatialRelIntersects",
+        "inSR": "4326",
+        "outSR": "4326",
+        "outFields": fields,
+        "f": "json",
+    }
 
 
 def active_wildfire(attributes, prefix=""):
@@ -300,21 +322,26 @@ def active_wildfire(attributes, prefix=""):
     return out is None or out <= 0
 
 
-def is_allowed_nws_url(url: Optional[str]) -> bool:
+def is_allowed_nws_url(url: str | None) -> bool:
     try:
         parsed = urlparse(url) if isinstance(url, str) else None
-        return bool(parsed and parsed.scheme == "https" and parsed.hostname in ALLOWED_NWS_HOSTS
-                    and parsed.port in (None, 443) and not parsed.username and not parsed.password)
+        return bool(
+            parsed
+            and parsed.scheme == "https"
+            and parsed.hostname in ALLOWED_NWS_HOSTS
+            and parsed.port in (None, 443)
+            and not parsed.username
+            and not parsed.password
+        )
     except ValueError:
         return False
 
 
-def get_cardinal_direction(degrees: Optional[float]) -> str:
+def get_cardinal_direction(degrees: float | None) -> str:
     degrees = finite_number(degrees)
     if degrees is None:
         return "N/A"
-    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
     return directions[int((degrees % 360 + 11.25) / 22.5) % 16]
 
 
@@ -326,8 +353,9 @@ async def health_check():
 @app.get("/api/incidents")
 async def get_incidents(response: Response = None):
     async def load():
-        raw = await fetch_arcgis(NIFC_API_URL, {
-            "where": "POOState='US-UT' OR POOState='UT'", "outFields": "*", "outSR": "4326", "f": "json"})
+        raw = await fetch_arcgis(
+            NIFC_API_URL, {"where": "POOState='US-UT' OR POOState='UT'", "outFields": "*", "outSR": "4326", "f": "json"}
+        )
         cleaned = []
         malformed = False
         for feature in raw["features"]:
@@ -339,26 +367,38 @@ async def get_incidents(response: Response = None):
             if not point or attrs.get("POOState", "UT") not in {"UT", "US-UT"}:
                 malformed = True
                 continue
-            cleaned.append({
-                "id": attrs.get("UniqueFireIdentifier") or str(attrs.get("OBJECTID")),
-                "object_id": attrs.get("OBJECTID"), "name": attrs.get("IncidentName") or "Unknown Wildfire",
-                "acres": finite_number(attrs.get("IncidentSize") or attrs.get("DailyAcres") or attrs.get("CalculatedAcres")) or 0.0,
-                "containment": finite_number(attrs.get("PercentContained")),
-                "discovered": attrs.get("FireDiscoveryDateTime") or attrs.get("IncidentStartDate"),
-                "cause": attrs.get("FireCause") or attrs.get("FireCauseGeneral") or "Undetermined",
-                "county": attrs.get("POOCounty") or "Unknown County", "latitude": point[1], "longitude": point[0],
-            })
+            cleaned.append(
+                {
+                    "id": attrs.get("UniqueFireIdentifier") or str(attrs.get("OBJECTID")),
+                    "object_id": attrs.get("OBJECTID"),
+                    "name": attrs.get("IncidentName") or "Unknown Wildfire",
+                    "acres": finite_number(
+                        attrs.get("IncidentSize") or attrs.get("DailyAcres") or attrs.get("CalculatedAcres")
+                    )
+                    or 0.0,
+                    "containment": finite_number(attrs.get("PercentContained")),
+                    "discovered": attrs.get("FireDiscoveryDateTime") or attrs.get("IncidentStartDate"),
+                    "cause": attrs.get("FireCause") or attrs.get("FireCauseGeneral") or "Undetermined",
+                    "county": attrs.get("POOCounty") or "Unknown County",
+                    "latitude": point[1],
+                    "longitude": point[0],
+                }
+            )
         if malformed:
             raise UpstreamError("Incident feed contains unusable records; refusing an incomplete snapshot.")
         return cleaned
+
     return await cached(cache, load, response)
 
 
 @app.get("/api/perimeters")
 async def get_perimeters(response: Response = None):
     async def load():
-        raw = await fetch_arcgis(PERIMETERS_URL, {
-            "where": "attr_POOState='US-UT' OR attr_POOState='UT'", "outFields": "*", "outSR": "4326", "f": "geojson"}, timeout=30)
+        raw = await fetch_arcgis(
+            PERIMETERS_URL,
+            {"where": "attr_POOState='US-UT' OR attr_POOState='UT'", "outFields": "*", "outSR": "4326", "f": "geojson"},
+            timeout=30,
+        )
         cleaned = []
         eligible = []
         for feature in raw["features"]:
@@ -372,13 +412,16 @@ async def get_perimeters(response: Response = None):
             except (ValueError, TypeError, KeyError):
                 continue
         return optional_snapshot(eligible, cleaned, {"type": "FeatureCollection", "features": cleaned})
+
     return await cached(perimeter_cache, load, response)
 
 
 @app.get("/api/hotspots")
 async def get_hotspots(response: Response = None):
     async def load():
-        raw = await fetch_arcgis(HOTSPOTS_URL, spatial_params("FID,Lon,Lat,YearDay,Time,Satellite,Method,FRP"), timeout=30)
+        raw = await fetch_arcgis(
+            HOTSPOTS_URL, spatial_params("FID,Lon,Lat,YearDay,Time,Satellite,Method,FRP"), timeout=30
+        )
         cleaned = []
         for feature in raw["features"]:
             feature = mapping(feature)
@@ -387,11 +430,20 @@ async def get_hotspots(response: Response = None):
             lat = geom.get("y") if geom.get("y") is not None else attrs.get("Lat")
             point = utah_point(lon, lat)
             if point:
-                cleaned.append({"fid": attrs.get("FID"), "latitude": point[1], "longitude": point[0],
-                                "satellite": attrs.get("Satellite", "Unknown"), "method": attrs.get("Method", "Unknown"),
-                                "frp": finite_number(attrs.get("FRP")) or 0.0,
-                                "time": attrs.get("Time", ""), "yearday": attrs.get("YearDay", "")})
+                cleaned.append(
+                    {
+                        "fid": attrs.get("FID"),
+                        "latitude": point[1],
+                        "longitude": point[0],
+                        "satellite": attrs.get("Satellite", "Unknown"),
+                        "method": attrs.get("Method", "Unknown"),
+                        "frp": finite_number(attrs.get("FRP")) or 0.0,
+                        "time": attrs.get("Time", ""),
+                        "yearday": attrs.get("YearDay", ""),
+                    }
+                )
         return optional_snapshot(raw["features"], cleaned)
+
     return await cached(hotspots_cache, load, response)
 
 
@@ -411,14 +463,22 @@ async def get_smoke(response: Response = None):
                             continue
                     except (ValueError, TypeError):
                         continue
-                    cleaned.append({"fid": attrs.get("FID") if attrs.get("FID") is not None else attrs.get("OBJECTID"),
-                                    "satellite": attrs.get("Satellite"), "start": attrs.get("Start"), "end": attrs.get("End_"),
-                                    "density": attrs.get("Density", "Light"), "rings": geom["rings"]})
+                    cleaned.append(
+                        {
+                            "fid": attrs.get("FID") if attrs.get("FID") is not None else attrs.get("OBJECTID"),
+                            "satellite": attrs.get("Satellite"),
+                            "start": attrs.get("Start"),
+                            "end": attrs.get("End_"),
+                            "density": attrs.get("Density", "Light"),
+                            "rings": geom["rings"],
+                        }
+                    )
                 return optional_snapshot(raw["features"], cleaned)
             except (UpstreamError, httpx.RequestError, ValueError):
                 if index:
                     raise
                 logger.warning("Primary smoke service failed; trying replica.")
+
     return await cached(smoke_cache, load, response)
 
 
@@ -431,8 +491,12 @@ def calculate_pm25_aqi(pm25: float) -> int:
         return 500
     pm25 = math.floor(pm25 * 10) / 10
     for low, high, index_low, index_high in (
-        (0, 9.0, 0, 50), (9.1, 35.4, 51, 100), (35.5, 55.4, 101, 150),
-        (55.5, 125.4, 151, 200), (125.5, 225.4, 201, 300), (225.5, 325.4, 301, 500),
+        (0, 9.0, 0, 50),
+        (9.1, 35.4, 51, 100),
+        (35.5, 55.4, 101, 150),
+        (55.5, 125.4, 151, 200),
+        (125.5, 225.4, 201, 300),
+        (225.5, 325.4, 301, 500),
     ):
         if pm25 <= high:
             return math.floor((index_high - index_low) / (high - low) * (pm25 - low) + index_low + 0.5)
@@ -442,12 +506,22 @@ def calculate_pm25_aqi(pm25: float) -> int:
 @app.get("/api/aqi")
 async def get_aqi(response: Response = None):
     async def load():
-        raw = await fetch_arcgis(AQI_URL, spatial_params(
-            "OBJECTID,location_id,city,location,lastUpdated,value,unit,provider_name,instrument_name", "country='US'"))
+        raw = await fetch_arcgis(
+            AQI_URL,
+            spatial_params(
+                "OBJECTID,location_id,city,location,lastUpdated,value,unit,provider_name,instrument_name",
+                "country='US'",
+            ),
+        )
         cleaned = []
-        tiers = [(50, "#10b981", "Good"), (100, "#eab308", "Moderate"),
-                 (150, "#f97316", "Unhealthy for Sensitive Groups"), (200, "#ef4444", "Unhealthy"),
-                 (300, "#a855f7", "Very Unhealthy"), (500, "#7f1d1d", "Hazardous")]
+        tiers = [
+            (50, "#10b981", "Good"),
+            (100, "#eab308", "Moderate"),
+            (150, "#f97316", "Unhealthy for Sensitive Groups"),
+            (200, "#ef4444", "Unhealthy"),
+            (300, "#a855f7", "Very Unhealthy"),
+            (500, "#7f1d1d", "Hazardous"),
+        ]
         for feature in raw["features"]:
             feature = mapping(feature)
             attrs, geom = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
@@ -460,12 +534,23 @@ async def get_aqi(response: Response = None):
                 continue
             aqi = calculate_pm25_aqi(pm25)
             _, color, tier = next(item for item in tiers if aqi <= item[0])
-            cleaned.append({"id": attrs.get("location_id") or attrs.get("OBJECTID"),
-                            "city": attrs.get("city") or attrs.get("location", "Unknown Location"),
-                            "name": attrs.get("location", "Unknown Monitor"), "pm25": pm25, "aqi": aqi,
-                            "tier": tier, "color": color, "latitude": point[1], "longitude": point[0],
-                            "provider": attrs.get("provider_name", "Government Monitor"), "last_updated": attrs.get("lastUpdated")})
+            cleaned.append(
+                {
+                    "id": attrs.get("location_id") or attrs.get("OBJECTID"),
+                    "city": attrs.get("city") or attrs.get("location", "Unknown Location"),
+                    "name": attrs.get("location", "Unknown Monitor"),
+                    "pm25": pm25,
+                    "aqi": aqi,
+                    "tier": tier,
+                    "color": color,
+                    "latitude": point[1],
+                    "longitude": point[0],
+                    "provider": attrs.get("provider_name", "Government Monitor"),
+                    "last_updated": attrs.get("lastUpdated"),
+                }
+            )
         return optional_snapshot(raw["features"], cleaned)
+
     return await cached(aqi_cache, load, response)
 
 
@@ -493,9 +578,13 @@ def parse_weather(properties, station_id, station_name):
     direction, _ = quantity(properties, "windDirection")
     if speed is None or speed < 0 or (speed > 0 and (direction is None or not 0 <= direction <= 360)):
         raise ValueError("Missing or invalid wind measurements")
-    conversions = {"wmoUnit:km_h-1": 1.0, "wmoUnit:m_s-1": 3.6,
-                   "wmoUnit:mi_h-1": 1.609344, "wmoUnit:kn": 1.852,
-                   "wmoUnit:kt": 1.852}
+    conversions = {
+        "wmoUnit:km_h-1": 1.0,
+        "wmoUnit:m_s-1": 3.6,
+        "wmoUnit:mi_h-1": 1.609344,
+        "wmoUnit:kn": 1.852,
+        "wmoUnit:kt": 1.852,
+    }
     if unit not in conversions:
         raise ValueError("Unknown wind speed unit")
     kmh = speed * conversions[unit]
@@ -515,14 +604,18 @@ def parse_weather(properties, station_id, station_name):
     if humidity is not None and not 0 <= humidity <= 100:
         humidity = None
     direction = direction % 360 if direction is not None and 0 <= direction <= 360 else None
-    return {"station_id": station_id, "station_name": station_name,
-            "wind_speed_mph": round(kmh / 1.609344, 1), "wind_speed_kmh": round(kmh, 1),
-            "wind_direction_deg": round(direction, 1) if direction is not None else None,
-            "wind_direction_cardinal": get_cardinal_direction(direction),
-            "temperature_f": round(temp * 1.8 + 32, 1) if temp is not None else None,
-            "temperature_c": round(temp, 1) if temp is not None else None,
-            "relative_humidity": round(humidity, 1) if humidity is not None else None,
-            "timestamp": properties.get("timestamp")}
+    return {
+        "station_id": station_id,
+        "station_name": station_name,
+        "wind_speed_mph": round(kmh / 1.609344, 1),
+        "wind_speed_kmh": round(kmh, 1),
+        "wind_direction_deg": round(direction, 1) if direction is not None else None,
+        "wind_direction_cardinal": get_cardinal_direction(direction),
+        "temperature_f": round(temp * 1.8 + 32, 1) if temp is not None else None,
+        "temperature_c": round(temp, 1) if temp is not None else None,
+        "relative_humidity": round(humidity, 1) if humidity is not None else None,
+        "timestamp": properties.get("timestamp"),
+    }
 
 
 async def nws_json(client, url):
@@ -550,8 +643,9 @@ async def get_weather(
     if cache_key not in weather_cache:
         # Never evict an in-flight entry, or a second request could start a duplicate refresh.
         if len(weather_cache) >= WEATHER_CACHE_LIMIT:
-            oldest = next((key for key, item in weather_cache.items()
-                           if not item.get("lock", asyncio.Lock()).locked()), None)
+            oldest = next(
+                (key for key, item in weather_cache.items() if not item.get("lock", asyncio.Lock()).locked()), None
+            )
             if oldest is None:
                 raise HTTPException(status_code=503, detail="Weather service is busy. Please retry.")
             del weather_cache[oldest]
@@ -559,7 +653,9 @@ async def get_weather(
     entry = weather_cache[cache_key]
 
     async def load():
-        async with httpx.AsyncClient(headers={"User-Agent": NWS_USER_AGENT}, timeout=10.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": NWS_USER_AGENT}, timeout=10.0, follow_redirects=False
+        ) as client:
             # Query the same rounded point used as the cache key.
             points = await nws_json(client, f"https://api.weather.gov/points/{cache_key}")
             stations_url = mapping(points.get("properties")).get("observationStations")
@@ -578,13 +674,19 @@ async def get_weather(
                     continue
                 try:
                     data = await nws_json(client, f"https://api.weather.gov/stations/{station_id}/observations/latest")
-                    result = parse_weather(mapping(data.get("properties")), station_id, props.get("name", "Unknown Station"))
+                    result = parse_weather(
+                        mapping(data.get("properties")), station_id, props.get("name", "Unknown Station")
+                    )
                     observed = observation_time(result["timestamp"])
-                    return LoadedData(result, min(time.time() + 300, observed + MAX_OBSERVATION_AGE_SECS),
-                                      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(time.time(), observed))))
+                    return LoadedData(
+                        result,
+                        min(time.time() + 300, observed + MAX_OBSERVATION_AGE_SECS),
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(time.time(), observed))),
+                    )
                 except (UpstreamError, httpx.RequestError, ValueError, TypeError):
                     logger.warning("Invalid/unavailable observation at station %s; trying next station.", station_id)
             raise UpstreamError("Failed to fetch valid meteorological observations from any nearby station.")
+
     return await cached(entry, load, response, ttl=300)
 
 
@@ -601,9 +703,15 @@ def parse_boundaries(data):
             props = mapping(feature.get("properties"))
             if not isinstance(props.get("NAME"), str) or not props["NAME"].strip():
                 raise ValueError("Municipality name is missing or invalid")
-            result.append({"name": props.get("NAME") or "Unknown", "object_id": props.get("OBJECTID"),
-                           "fips": props.get("FIPS"), "geometry": geom,
-                           "centroid": (geom.centroid.y, geom.centroid.x)})
+            result.append(
+                {
+                    "name": props.get("NAME") or "Unknown",
+                    "object_id": props.get("OBJECTID"),
+                    "fips": props.get("FIPS"),
+                    "geometry": geom,
+                    "centroid": (geom.centroid.y, geom.centroid.x),
+                }
+            )
         except (ValueError, TypeError, KeyError):
             malformed = True
     if malformed:
@@ -618,7 +726,9 @@ def persist_boundaries(data):
     BOUNDARIES_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=BOUNDARIES_PATH.parent, delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=BOUNDARIES_PATH.parent, delete=False
+        ) as handle:
             temporary_path = Path(handle.name)
             json.dump(data, handle, allow_nan=False)
             handle.flush()
@@ -640,8 +750,11 @@ async def recover_boundaries(force: bool = False) -> bool:
         if not force and now < boundary_state.get("retry_after", 0.0):
             return bool(muni_boundaries)
         try:
-            data = await fetch_arcgis(BOUNDARIES_URL, {
-                "where": "1=1", "outFields": "NAME,OBJECTID,FIPS", "outSR": "4326", "f": "geojson"}, timeout=60)
+            data = await fetch_arcgis(
+                BOUNDARIES_URL,
+                {"where": "1=1", "outFields": "NAME,OBJECTID,FIPS", "outSR": "4326", "f": "geojson"},
+                timeout=60,
+            )
             loaded = parse_boundaries(data)
         except (httpx.RequestError, UpstreamError, ValueError):
             failures = boundary_state.get("failures", 0) + 1
@@ -698,7 +811,7 @@ def cap_time(value):
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             return parsed.timestamp()
         except ValueError:
             pass
@@ -743,8 +856,12 @@ def threat_geometry(lat, lon, speed, direction):
     # Operate in local miles, then map back to WGS84 for municipality overlay.
     base = Point(0, 0).buffer(5.0)
     plume = (LineString([(0, 0), (dx, dy)]) if dx or dy else Point(0, 0)).buffer(5.0)
+
     def to_geo(geom):
-        return translate(scale(geom, xfact=1 / miles_per_lon, yfact=1 / miles_per_lat, origin=(0, 0)), xoff=lon, yoff=lat)
+        return translate(
+            scale(geom, xfact=1 / miles_per_lon, yfact=1 / miles_per_lat, origin=(0, 0)), xoff=lon, yoff=lat
+        )
+
     return to_geo(base), to_geo(plume), miles_per_lon, miles_per_lat
 
 
@@ -763,8 +880,13 @@ def merge_alerts(previous, current):
             for value in item[field]:
                 if value not in values:
                     values.append(deepcopy(value))
-    return sorted(combined.values(), key=lambda item: (
-        -item.get("risk_level", 0), min((fire["distance_miles"] for fire in item.get("fires", [])), default=999)))
+    return sorted(
+        combined.values(),
+        key=lambda item: (
+            -item.get("risk_level", 0),
+            min((fire["distance_miles"] for fire in item.get("fires", [])), default=999),
+        ),
+    )
 
 
 @app.get("/api/alerts")
@@ -783,9 +905,17 @@ async def get_alerts(response: Response = None):
         dependencies = [cache] if cache["data"] is not None else []
         cap_failed = False
         try:
-            raw = await fetch_arcgis(CAP_URL, {
-                "where": "countryCode='us' AND (event LIKE '%Wildfire%' OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
-                "outFields": "*", "outSR": "4326", "f": "json"}, timeout=10)
+            raw = await fetch_arcgis(
+                CAP_URL,
+                {
+                    "where": "countryCode='us' AND (event LIKE '%Wildfire%' "
+                    "OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
+                    "outFields": "*",
+                    "outSR": "4326",
+                    "f": "json",
+                },
+                timeout=10,
+            )
             parsed_fema = parse_cap(raw)
         except (httpx.RequestError, UpstreamError, ValueError):
             logger.warning("CAP warnings unavailable; alert refresh is degraded.")
@@ -796,26 +926,38 @@ async def get_alerts(response: Response = None):
             async with semaphore:
                 weather_response = Response()
                 try:
-                    weather = await asyncio.wait_for(get_weather(
-                        latitude=incident["latitude"], longitude=incident["longitude"], response=weather_response), timeout=12)
-                    entry = weather_cache.get(f'{incident["latitude"]:.3f},{incident["longitude"]:.3f}')
+                    weather = await asyncio.wait_for(
+                        get_weather(
+                            latitude=incident["latitude"], longitude=incident["longitude"], response=weather_response
+                        ),
+                        timeout=12,
+                    )
+                    entry = weather_cache.get(f"{incident['latitude']:.3f},{incident['longitude']:.3f}")
                     if entry is not None:
                         dependencies.append(entry)
                     return weather, weather_response.headers.get("X-Data-Stale") == "true"
-                except (HTTPException, asyncio.TimeoutError):
+                except (TimeoutError, HTTPException):
                     return None, True
 
         weather_results = await asyncio.gather(*(fire_weather(incident) for incident in incidents))
         alerts = {}
 
         def city_alert(muni):
-            return alerts.setdefault(muni["name"], {
-                "city": muni["name"], "object_id": muni["object_id"], "fips": muni["fips"],
-                "risk_level": 1, "risk_level_text": "Ready", "centroid": muni["centroid"],
-                "fires": [], "fema_alerts": [],
-            })
+            return alerts.setdefault(
+                muni["name"],
+                {
+                    "city": muni["name"],
+                    "object_id": muni["object_id"],
+                    "fips": muni["fips"],
+                    "risk_level": 1,
+                    "risk_level_text": "Ready",
+                    "centroid": muni["centroid"],
+                    "fires": [],
+                    "fema_alerts": [],
+                },
+            )
 
-        for incident, (weather, weather_stale) in zip(incidents, weather_results):
+        for incident, (weather, weather_stale) in zip(incidents, weather_results, strict=True):
             degraded = degraded or weather_stale
             speed = weather.get("wind_speed_mph", 0.0) if weather else 0.0
             direction = weather.get("wind_direction_deg") if weather else None
@@ -828,28 +970,65 @@ async def get_alerts(response: Response = None):
                 record = city_alert(muni)
                 if base.intersects(muni["geometry"]):
                     record.update(risk_level=2, risk_level_text="Set")
-                local_city = scale(translate(muni["geometry"], xoff=-lon, yoff=-lat),
-                                   xfact=miles_per_lon, yfact=miles_per_lat, origin=(0, 0))
+                local_city = scale(
+                    translate(muni["geometry"], xoff=-lon, yoff=-lat),
+                    xfact=miles_per_lon,
+                    yfact=miles_per_lat,
+                    origin=(0, 0),
+                )
                 if not any(fire["id"] == incident["id"] for fire in record["fires"]):
-                    record["fires"].append({"name": incident["name"], "id": incident["id"],
-                                            "distance_miles": round(Point(0, 0).distance(local_city), 1),
-                                            "wind_speed_mph": speed, "wind_direction": cardinal, "wind_direction_deg": direction})
+                    record["fires"].append(
+                        {
+                            "name": incident["name"],
+                            "id": incident["id"],
+                            "distance_miles": round(Point(0, 0).distance(local_city), 1),
+                            "wind_speed_mph": speed,
+                            "wind_direction": cardinal,
+                            "wind_direction_deg": direction,
+                        }
+                    )
         for muni in muni_boundaries:
             for warning in parsed_fema:
                 if warning["geometry"].intersects(muni["geometry"]):
                     record = city_alert(muni)
                     record.update(risk_level=2, risk_level_text="Set")
-                    record["fema_alerts"].append({**{key: warning["attributes"].get(key) for key in (
-                        "event", "headline", "description", "instruction", "severity", "urgency", "expires")}, "rings": warning["rings"]})
-        result = sorted(alerts.values(), key=lambda item: (
-            -item["risk_level"], min((fire["distance_miles"] for fire in item["fires"]), default=999)))
+                    record["fema_alerts"].append(
+                        {
+                            **{
+                                key: warning["attributes"].get(key)
+                                for key in (
+                                    "event",
+                                    "headline",
+                                    "description",
+                                    "instruction",
+                                    "severity",
+                                    "urgency",
+                                    "expires",
+                                )
+                            },
+                            "rings": warning["rings"],
+                        }
+                    )
+        result = sorted(
+            alerts.values(),
+            key=lambda item: (
+                -item["risk_level"],
+                min((fire["distance_miles"] for fire in item["fires"]), default=999),
+            ),
+        )
         if degraded or cap_failed:
             if alerts_cache["data"] is not None:
                 result = merge_alerts(alerts_cache["data"], result)
             raise UpstreamError("Alert dependencies are unavailable or stale.", status_code=503, partial=result)
         completed = time.time()
         # A derived alert must never appear newer, or stay fresh longer, than its inputs.
-        return LoadedData(result, min([completed + CACHE_DURATION_SECS] + [entry["expiry"] for entry in dependencies]),
-                          min([time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed))]
-                              + [entry["created_at"] for entry in dependencies if entry["created_at"]]))
+        return LoadedData(
+            result,
+            min([completed + CACHE_DURATION_SECS] + [entry["expiry"] for entry in dependencies]),
+            min(
+                [time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed))]
+                + [entry["created_at"] for entry in dependencies if entry["created_at"]]
+            ),
+        )
+
     return await cached(alerts_cache, load, response)
