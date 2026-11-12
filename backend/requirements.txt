@@ -1,5 +1,6 @@
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-httpx>=0.24.0
-pydantic>=2.0.0
-shapely>=2.0.0
+# Exact versions verified by the test suite on Python 3.11 and 3.14.
+# Update deliberately: bump, run `make check` and `make check-containers`, commit.
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+shapely==2.2.0
