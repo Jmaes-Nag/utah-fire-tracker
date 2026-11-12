@@ -49,7 +49,16 @@ Utah_fire_tracker/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   └── main.py            # FastAPI Application & Spatial Engines
+│   │   ├── main.py            # FastAPI app, CORS, startup, route registration
+│   │   ├── config.py          # Service URLs and tuning constants
+│   │   ├── cache.py           # Cached refresh with freshness headers
+│   │   ├── arcgis.py          # ArcGIS feature-service client
+│   │   ├── geometry.py        # Polygon validation and wind-corridor geometry
+│   │   ├── feeds.py           # Incidents, perimeters, hotspots, smoke, AQI
+│   │   ├── weather.py         # NWS observations
+│   │   ├── boundaries.py      # Municipal boundary loading and recovery
+│   │   ├── alerts.py          # Cities-at-risk engine and CAP warnings
+│   │   └── util.py            # Shared helpers
 │   ├── Dockerfile
 │   ├── tests/                 # Spatial, cache, feed and API regression tests
 │   ├── requirements.txt       # Pinned runtime dependencies (fastapi, httpx, shapely, uvicorn)

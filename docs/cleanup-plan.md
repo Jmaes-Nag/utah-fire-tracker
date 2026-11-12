@@ -42,6 +42,14 @@ Status: done on 2026-11-12. Python versions needed no change: the image runs 3.1
 
 ## Phase 3 — Split the backend
 
+Status: mostly done on 2026-11-12. `main.py` is split into the modules below (plus `util.py`), the tests are split to match, alerts call service functions instead of route handlers, and the smaller items in the list are fixed. Still open, each best done as its own change because the tests reach into these details:
+
+- Cache entries are still plain dicts; about 40 test lines index or `.update()` them.
+- A new `httpx.AsyncClient` is still built per upstream call; the tests replace `httpx.AsyncClient` to inject transports.
+- `boundaries.muni_boundaries` is still a module global reassigned with `global`.
+
+The rest of this section is the original plan, kept for reference.
+
 `main.py` holds config, caching, the ArcGIS client, geometry validation, six feed routes, weather, boundary persistence and the alert engine. Suggested layout under `backend/app/`:
 
 - `config.py` — URLs, TTLs, the Utah envelope
