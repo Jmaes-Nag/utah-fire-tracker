@@ -11,6 +11,7 @@ resolver 8.8.8.8 1.1.1.1 valid=30s ipv6=off;
 server {
     listen 80;
     server_name ${PRODUCTION_DOMAIN};
+    limit_req_status 429;
 
     # Enable gzip for text/json/JS/CSS assets and proxied API responses.
     # The 1.9MB burn-perimeters GeoJSON drops ~3x (662KB) with this alone.
@@ -24,31 +25,47 @@ server {
     # The key never leaves the server: it is added to the tile request only here.
     set $carto_api_key "${CARTO_API_KEY}";
     set $carto_query "";
+    set $carto_enabled false;
     if ($carto_api_key != "") {
         set $carto_query "?key=$carto_api_key";
+        set $carto_enabled true;
     }
 
     # HTTP Security Headers
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://unpkg.com https://services3.arcgis.com https://services2.arcgis.com https://services9.arcgis.com; connect-src 'self' https://nominatim.openstreetmap.org;" always;
+    # Keep all add_header directives at this level: a location-level header
+    # would suppress inherited CSP and other security headers on static pages.
+    add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://unpkg.com https://services3.arcgis.com https://services2.arcgis.com https://services9.arcgis.com; connect-src 'self' https://nominatim.openstreetmap.org;" always;
+
+    # Only expose provider availability; the Carto credential stays server-side.
+    location = /map-config.js {
+        default_type application/javascript;
+        return 200 'window.MAP_CONFIG = {cartoEnabled: $carto_enabled};';
+    }
 
     location / {
         root /usr/share/nginx/html;
         index index.html;
-        try_files $uri $uri/ /index.html;
-        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+        try_files $uri $uri/ =404;
     }
 
     # API Proxy with Rate Limiting (burst up to 10 requests, no delay)
-    location /api {
+    location /api/ {
         limit_req zone=api_limit burst=10 nodelay;
-        proxy_pass http://backend:8000;
+        # Resolve with Docker DNS at request time so backend replacement does
+        # not leave Nginx forwarding to the old container address indefinitely.
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $backend_upstream backend:8000;
+        proxy_pass http://$backend_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 75s;
     }
 
     # Carto basemap tile proxy. The browser requests /tiles/{theme}/{s}/{z}/{x}/{y}(@2x).png
@@ -61,5 +78,16 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $2.basemaps.cartocdn.com;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_ssl_verify_depth 3;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 20s;
+    }
+
+    location /tiles/ {
+        return 404;
     }
 }

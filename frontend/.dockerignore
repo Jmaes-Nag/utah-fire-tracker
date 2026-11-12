@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!nginx.conf.template
+!index.html
+!sources.html
+!styles.css
+!app.js
