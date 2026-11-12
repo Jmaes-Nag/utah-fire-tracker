@@ -6,6 +6,10 @@ __pycache__/
 # Caches
 .cache/
 .pytest_cache/
+.ruff_cache/
+
+# Frontend development tooling (formatter only; the app has no npm runtime dependencies)
+node_modules/
 
 # Local downloaded spatial data (Auto-downloaded by backend on startup)
 backend/app/data/*.geojson

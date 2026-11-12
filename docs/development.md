@@ -3,12 +3,15 @@
 From the repository root, run:
 
 ```sh
-make setup             # Create .venv and install backend dependencies once
-make check             # Offline backend/frontend/script tests, public files, whitespace
+make setup             # Create .venv and install backend and lint dependencies once
+make check             # Offline backend/frontend/script tests, lint, public files, whitespace
+make format            # Apply ruff fixes and formatting to backend/ and scripts/
 make check-containers  # Image builds, Python 3.11 tests, Nginx/HTTP/API proxy checks
 ```
 
 Python 3.11 or later and Node.js 20 or later are required. The container checks also require a running Docker engine. `PYTHON=/path/to/python make check` selects another interpreter; when `.venv` exists the backend runner uses that environment. The commands work without a configured Carto key or downloaded municipal data.
+
+Backend dependencies are pinned to exact versions in `backend/requirements.txt`. To update one, change the pin, run `make setup`, `make check` and `make check-containers`, and commit the result. The backend check also runs `ruff check` and `ruff format --check` using the settings in `pyproject.toml`; run `make format` before committing Python changes.
 
 For a shorter feedback cycle, use `make check-backend`, `make check-frontend`, or `make check-public`. The Python entry points are available directly if Make is unavailable, for example `python3 scripts/check.py --suite frontend`.
 

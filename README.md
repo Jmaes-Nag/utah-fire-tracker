@@ -51,8 +51,9 @@ Utah_fire_tracker/
 │   │   ├── __init__.py
 │   │   └── main.py            # FastAPI Application & Spatial Engines
 │   ├── Dockerfile
-│   ├── requirements.txt       # Python Dependencies (shapely, fastapi, httpx, etc.)
-│   └── test_*.py              # Spatial, cache, feed and API regression tests
+│   ├── tests/                 # Spatial, cache, feed and API regression tests
+│   ├── requirements.txt       # Pinned runtime dependencies (fastapi, httpx, shapely, uvicorn)
+│   └── requirements-dev.txt   # Runtime dependencies plus the ruff linter/formatter
 ├── frontend/
 │   ├── app.js                 # Leaflet Map handlers, Tooltips, & API queries
 │   ├── index.html             # Dashboard Skeleton
@@ -97,7 +98,7 @@ Without `CARTO_API_KEY`, the map uses standard OpenStreetMap tiles in both inter
 Run the backend tests from the repository root in a local virtual environment:
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
 .venv/bin/python -m unittest discover -s backend -p 'test_*.py' -v
 ```
 

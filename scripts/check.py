@@ -100,6 +100,12 @@ def main():
             tests = unittest.defaultTestLoader.discover(str(ROOT / "backend"), pattern="test_*.py")
             if not unittest.TextTestRunner(verbosity=1).run(tests).wasSuccessful():
                 return 1
+            try:
+                __import__("ruff")
+            except ImportError as exc:
+                raise RuntimeError("Ruff missing. Run `make setup` first.") from exc
+            run(sys.executable, "-m", "ruff", "check", "backend", "scripts")
+            run(sys.executable, "-m", "ruff", "format", "--check", "backend", "scripts")
     if args.suite in ("all", "frontend"):
         run("node", "--check", "frontend/app.js")
         tests = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "frontend/tests").glob("*.test.cjs"))
