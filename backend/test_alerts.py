@@ -1,90 +1,29 @@
 import unittest
-import math
-from shapely.geometry import Point, Polygon
-from shapely.affinity import translate
+from shapely.geometry import box
+from app.main import calculate_pm25_aqi, threat_geometry
+
 
 class TestAlertsEngine(unittest.TestCase):
-    def test_directional_math(self):
-        # Fire coordinates
-        fire_lat = 40.7608
-        fire_lon = -111.8910
-        
-        # Wind: South wind (180 deg) at 20 mph
-        # Downwind heading: (180 + 180) % 360 = 0 deg (North)
-        # Trig angle: 90 - 0 = 90 deg
-        # dx should be 0, dy should be positive (North shift)
-        wind_dir_deg = 180
-        wind_speed_mph = 20.0
-        
-        DEG_PER_MILE = 0.0145
-        
-        downwind_deg = (wind_dir_deg + 180) % 360
-        trig_deg = 90 - downwind_deg
-        trig_rad = math.radians(trig_deg)
-        
-        shift_miles = wind_speed_mph * 0.2
-        shift_deg = shift_miles * DEG_PER_MILE
-        dx = math.cos(trig_rad) * shift_deg
-        dy = math.sin(trig_rad) * shift_deg
-        
-        # Assert dx is 0 and dy is positive (shifting North)
-        self.assertAlmostEqual(dx, 0.0, places=5)
-        self.assertGreater(dy, 0.0)
-        
-        # Verify translating shapely point works as expected
-        fire_point = Point(fire_lon, fire_lat)
-        shifted_point = translate(fire_point, xoff=dx, yoff=dy)
-        self.assertAlmostEqual(shifted_point.x, fire_lon, places=5)
-        self.assertGreater(shifted_point.y, fire_lat)
-        
-    def test_intersection_logic(self):
-        # Setup: Fire is at 40.66, -111.89
-        # City polygon is around 40.75, -111.89 (about 6.2 miles North)
-        # 5-mile base buffer: no intersection (5 * 0.0145 = 0.0725 deg ~ 5 miles)
-        # With 20mph South wind blowing North, the shift is 4 miles (4 * 0.0145 = 0.058 deg).
-        # Shifted point is at 40.718. The buffer extends to 40.79. It should intersect!
-        
-        fire_point = Point(-111.8910, 40.6608)
-        city_polygon = Polygon([
-            (-111.90, 40.75),
-            (-111.88, 40.75),
-            (-111.88, 40.77),
-            (-111.90, 40.77),
-            (-111.90, 40.75)
-        ])
-        
-        # Scenario 1: No wind
-        threat_zone_no_wind = fire_point.buffer(5.0 * 0.0145)
-        self.assertFalse(threat_zone_no_wind.intersects(city_polygon))
-        
-        # Scenario 2: South wind (180 deg) at 20 mph (blows North)
-        dx = 0.0
-        dy = 20.0 * 0.2 * 0.0145 # 0.058 deg North shift
-        shifted_fire_point = translate(fire_point, xoff=dx, yoff=dy)
-        threat_zone_wind = fire_point.union(shifted_fire_point).buffer(5.0 * 0.0145)
-        
-        self.assertTrue(threat_zone_wind.intersects(city_polygon))
+    def test_south_wind_projects_north_and_retains_fire_buffer(self):
+        base, plume, _, _ = threat_geometry(40.6608, -111.8910, 20.0, 180.0)
+        city = box(-111.90, 40.75, -111.88, 40.77)
+        self.assertFalse(base.intersects(city))
+        self.assertTrue(plume.intersects(city))
+        self.assertTrue(plume.covers(base))
+
+    def test_calm_weather_uses_base_buffer(self):
+        base, plume, _, _ = threat_geometry(40.6608, -111.8910, 0.0, None)
+        self.assertTrue(base.equals(plume))
 
     def test_aqi_breakpoints(self):
-        from app.main import calculate_pm25_aqi
-        # Good range: 0.0 to 9.0 PM2.5 -> 0 to 50 AQI
-        self.assertEqual(calculate_pm25_aqi(0.0), 0)
-        self.assertEqual(calculate_pm25_aqi(4.5), 25)
-        self.assertEqual(calculate_pm25_aqi(9.0), 50)
-        
-        # Moderate range: 9.1 to 35.4 -> 51 to 100
-        self.assertEqual(calculate_pm25_aqi(9.1), 51)
-        self.assertEqual(calculate_pm25_aqi(22.25), 75)
-        self.assertEqual(calculate_pm25_aqi(35.4), 100)
-        
-        # Unhealthy for Sensitive Groups: 35.5 to 55.4 -> 101 to 150
-        self.assertEqual(calculate_pm25_aqi(35.5), 101)
-        self.assertEqual(calculate_pm25_aqi(45.45), 126)
-        self.assertEqual(calculate_pm25_aqi(55.4), 150)
-        
-        # Hazardous upper boundary cap
-        self.assertEqual(calculate_pm25_aqi(500.0), 500)
-        self.assertEqual(calculate_pm25_aqi(600.0), 500)
+        # EPA concentration truncation precedes interpolation and AQI rounding.
+        expected = {0.0: 0, 4.5: 25, 9.0: 50, 9.1: 51, 22.25: 75,
+                    35.4: 100, 35.5: 101, 45.45: 125, 55.4: 150,
+                    225.5: 301, 325.4: 500, 500.0: 500, 600.0: 500}
+        for concentration, aqi in expected.items():
+            with self.subTest(concentration=concentration):
+                self.assertEqual(calculate_pm25_aqi(concentration), aqi)
+
 
 if __name__ == '__main__':
     unittest.main()

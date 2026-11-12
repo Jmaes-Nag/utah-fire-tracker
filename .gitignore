@@ -11,8 +11,9 @@ __pycache__/
 backend/app/data/*.geojson
 
 # Environment variables & virtual environments
-.env
-.env.local
+.env*
+!.env.example
+!.env.*.example
 .venv
 venv/
 ENV/
@@ -34,3 +35,21 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Local review notes, screenshots, credentials and machine-specific agent state
+/NEXT_STEPS.md
+/backend/REVIEW.md
+/frontend/REVIEW.md
+/docs/reliability-review.md
+/.local/
+/.aws/
+/.codex/
+/secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.har
+playwright-report/
+test-results/

@@ -1,1051 +1,855 @@
-import os
-import time
+import asyncio
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
 import logging
 import math
-import json
-import asyncio
-from typing import Dict, List, Optional
+import os
+from pathlib import Path
+import tempfile
+import time
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-from shapely.geometry import Point, Polygon, shape
-from shapely.affinity import translate
+from shapely import make_valid
+from shapely.errors import GEOSException
+from shapely.affinity import scale, translate
+from shapely.geometry import LineString, Point, box, shape
+from shapely.ops import unary_union
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("wildfire-tracker")
 
-app = FastAPI(title="Utah Wildfire and Wind Tracking API")
 
-# Global variables
-muni_boundaries: List[Dict[str, any]] = []
+@asynccontextmanager
+async def lifespan(app):
+    await startup_event()
+    task = asyncio.create_task(boundary_recovery_loop()) if not muni_boundaries else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
-# Configure CORS dynamically based on environment configuration
+
+app = FastAPI(title="Utah Wildfire and Wind Tracking API", lifespan=lifespan)
+muni_boundaries: List[Dict[str, Any]] = []
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*")
-if allowed_origins_env == "*":
-    origins = ["*"]
-    allow_creds = False  # Wildcard origins cannot combine with allow_credentials=True in modern browsers
-else:
-    origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
-    allow_creds = True
-
+origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=allow_creds,
-    allow_methods=["GET"],  # Restrict to GET requests as this is a read-only dashboard
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=origins, allow_credentials=origins != ["*"],
+    allow_methods=["GET"], allow_headers=["*"],
+    expose_headers=["X-Data-Timestamp", "X-Data-Stale"],
 )
 
-# Configuration & Cache Setup
 NWS_USER_AGENT = os.getenv("NWS_USER_AGENT", "UtahWildfireTracker/1.0 (contact@example.com)")
 NIFC_API_URL = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
-
-# Only these hosts may be fetched server-side as part of NWS weather lookups.
-# Prevents SSRF if a compromised/spoofed upstream response points to an
-# arbitrary URL (e.g. cloud metadata endpoints or internal addresses).
+PERIMETERS_URL = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+HOTSPOTS_URL = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Fire_Detections_(v1)/FeatureServer/0/query"
+SMOKE_URL = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query"
+SMOKE_FALLBACK_URL = "https://services2.arcgis.com/r6iFVcMJeA4kB4GC/arcgis/rest/services/NOAA_HMS_Smoke_Detection_Replica/FeatureServer/0/query"
+AQI_URL = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Air_Quality_PM25_Latest_Results/FeatureServer/0/query"
+CAP_URL = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/CAP_Alerts_Feed/FeatureServer/0/query"
+BOUNDARIES_URL = "https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/UtahMunicipalBoundaries/FeatureServer/0/query"
+BOUNDARIES_PATH = Path(__file__).resolve().parent / "data" / "utah_municipal_boundaries.geojson"
 ALLOWED_NWS_HOSTS = {"api.weather.gov"}
+UTAH_ENVELOPE = box(-114.05, 37.0, -109.05, 42.0)
+CACHE_DURATION_SECS = 15 * 60
+RETRY_BACKOFF_SECS = 30
+BOUNDARY_MAX_BACKOFF_SECS = CACHE_DURATION_SECS
+BOUNDARY_MAX_BACKGROUND_ATTEMPTS = 5
+WEATHER_CACHE_LIMIT = 1000
+MAX_OBSERVATION_AGE_SECS = 2 * 60 * 60
+
+
+def new_cache():
+    return {"data": None, "expiry": 0.0, "created_at": ""}
+
+
+def new_boundary_state():
+    return {"retry_after": 0.0, "failures": 0}
+
+
+cache = new_cache()
+perimeter_cache = new_cache()
+hotspots_cache = new_cache()
+smoke_cache = new_cache()
+aqi_cache = new_cache()
+alerts_cache = new_cache()
+boundary_state = new_boundary_state()
+weather_cache: Dict[str, Any] = {}
+
+
+class UpstreamError(Exception):
+    def __init__(self, detail="Upstream service returned invalid data.", status_code=502, partial=None):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.partial = partial
+
+
+@dataclass
+class LoadedData:
+    data: Any
+    expiry: float
+    created_at: str
+    incomplete: bool = False
+
+
+def set_data_headers(response, entry, stale=False):
+    if response is not None:
+        response.headers["X-Data-Timestamp"] = entry.get("created_at", "")
+        response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
+        if stale:
+            response.headers["X-Data-Stale"] = "true"
+        elif "X-Data-Stale" in response.headers:
+            del response.headers["X-Data-Stale"]
+
+
+async def cached(entry, loader, response=None, ttl=CACHE_DURATION_SECS):
+    """Coalesce refreshes, including failed refreshes; never renew stale data's age."""
+    lock = entry.setdefault("lock", asyncio.Lock())
+    async with lock:
+        now = time.time()
+        if entry["data"] is not None and now < entry["expiry"]:
+            set_data_headers(response, entry, stale=entry.get("incomplete", False))
+            return entry["data"]
+        if now >= entry.get("retry_after", 0):
+            try:
+                data = await loader()
+            except (UpstreamError, httpx.RequestError, ValueError, TypeError, OverflowError, GEOSException) as exc:
+                logger.warning("Feed refresh failed: %s", exc)
+                entry["failure"] = exc if isinstance(exc, UpstreamError) else UpstreamError(
+                    "Unable to connect to upstream service." if isinstance(exc, httpx.RequestError)
+                    else "Upstream service returned invalid data.",
+                    status_code=503 if isinstance(exc, httpx.RequestError) else 502,
+                )
+                entry["retry_after"] = time.time() + RETRY_BACKOFF_SECS
+                entry["failure_created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            else:
+                completed = time.time()
+                expiry = completed + ttl
+                created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed))
+                incomplete = isinstance(data, LoadedData) and data.incomplete
+                if isinstance(data, LoadedData):
+                    expiry, created_at, data = min(expiry, data.expiry), data.created_at, data.data
+                entry.update(data=data, expiry=expiry, created_at=created_at, incomplete=incomplete)
+                entry.pop("failure", None)
+                entry.pop("retry_after", None)
+                set_data_headers(response, entry, stale=incomplete or completed >= expiry)
+                return data
+        if entry["data"] is not None:
+            set_data_headers(response, entry, stale=True)
+            failure = entry.get("failure")
+            return failure.partial if failure and failure.partial is not None else entry["data"]
+        failure = entry["failure"]
+        if failure.partial is not None:
+            # Cold-start degraded alerts are visible but never cached as a fresh all-clear.
+            set_data_headers(response, {"created_at": entry["failure_created_at"]}, stale=True)
+            return failure.partial
+        raise HTTPException(status_code=failure.status_code, detail=str(failure))
+
+
+def finite_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def coordinates(lon, lat):
+    lon, lat = finite_number(lon), finite_number(lat)
+    if lon is None or lat is None or not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        return None
+    return lon, lat
+
+
+def utah_point(lon, lat):
+    point = coordinates(lon, lat)
+    return point if point and UTAH_ENVELOPE.covers(Point(*point)) else None
+
+
+def polygon_geometry(geometry):
+    """Validate/repair polygonal GeoJSON without allowing NaN or non-WGS84 coordinates."""
+    if not isinstance(geometry, dict) or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+        raise ValueError("Expected polygon geometry")
+    polygons = geometry.get("coordinates")
+    polygons = [polygons] if geometry["type"] == "Polygon" else polygons
+    if not isinstance(polygons, list) or not polygons:
+        raise ValueError("Empty polygon")
+    for rings in polygons:
+        if not isinstance(rings, list) or not rings:
+            raise ValueError("Missing polygon rings")
+        for ring in rings:
+            if not isinstance(ring, list) or len(ring) < 4:
+                raise ValueError("Invalid polygon ring")
+            for point in ring:
+                if (not isinstance(point, (list, tuple)) or len(point) not in (2, 3)
+                        or coordinates(*point[:2]) is None or any(finite_number(value) is None for value in point)):
+                    raise ValueError("Invalid polygon coordinate")
+            if ring[0][:2] != ring[-1][:2]:
+                raise ValueError("Unclosed polygon ring")
+    try:
+        geom = shape(geometry)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+    except GEOSException as exc:
+        raise ValueError("Invalid polygon geometry") from exc
+    if geom.geom_type == "GeometryCollection":
+        geom = unary_union([g for g in geom.geoms if g.geom_type in {"Polygon", "MultiPolygon"}])
+    if geom.is_empty or geom.geom_type not in {"Polygon", "MultiPolygon"} or geom.area <= 0:
+        raise ValueError("Degenerate polygon")
+    return geom
+
+
+def arcgis_polygon(rings):
+    """ArcGIS rings may be separate shells, holes, or nested islands (even-odd fill)."""
+    if not isinstance(rings, list) or not rings:
+        raise ValueError("Missing ArcGIS rings")
+    result = None
+    for ring in rings:
+        poly = polygon_geometry({"type": "Polygon", "coordinates": [ring]})
+        result = poly if result is None else result.symmetric_difference(poly)
+    if result.is_empty or not result.is_valid:
+        raise ValueError("Invalid ArcGIS polygon")
+    return result
+
+
+def feature_list(payload, geojson=False):
+    if not isinstance(payload, dict) or "error" in payload:
+        raise UpstreamError("ArcGIS service returned an error or invalid document.")
+    if geojson and payload.get("type") != "FeatureCollection":
+        raise UpstreamError("ArcGIS service returned invalid GeoJSON.")
+    if not isinstance(payload.get("features"), list):
+        raise UpstreamError("ArcGIS service did not return a feature list.")
+    return payload["features"]
+
+
+async def fetch_arcgis(url, params, timeout=15.0):
+    """Read every page or reject the refresh; truncated feeds can suppress alerts."""
+    features, fingerprints = [], set()
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for _ in range(100):
+            page_params = dict(params)
+            if features:
+                page_params["resultOffset"] = len(features)
+            res = await client.get(url, params=page_params)
+            if res.status_code != 200:
+                raise UpstreamError("ArcGIS service returned an error status.")
+            try:
+                raw = res.json()
+            except ValueError as exc:
+                raise UpstreamError("ArcGIS service returned invalid JSON.") from exc
+            page = feature_list(raw, geojson=params.get("f") == "geojson")
+            fingerprint = json.dumps(page, sort_keys=True, allow_nan=False)
+            has_more = raw.get("exceededTransferLimit") or mapping(raw.get("properties")).get("exceededTransferLimit")
+            if fingerprint in fingerprints or (has_more and not page):
+                raise UpstreamError("ArcGIS pagination did not advance.")
+            fingerprints.add(fingerprint)
+            features.extend(page)
+            if not has_more:
+                return {"type": "FeatureCollection", "features": features}
+    raise UpstreamError("ArcGIS pagination exceeded the safety limit.")
+
+
+def require_usable(features, cleaned):
+    if features and not cleaned:
+        raise UpstreamError("Upstream feed contained no usable records.")
+    return cleaned
+
+
+def optional_snapshot(features, cleaned, payload=None):
+    """Keep usable map features while disclosing omissions on every cached response."""
+    require_usable(features, cleaned)
+    data = cleaned if payload is None else payload
+    if len(features) == len(cleaned):
+        return data
+    now = time.time()
+    return LoadedData(data, now + CACHE_DURATION_SECS,
+                      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), incomplete=True)
+
+
+def spatial_params(fields, where="1=1"):
+    return {"where": where, "geometryType": "esriGeometryEnvelope",
+            "geometry": "-114.05,37.0,-109.05,42.0", "spatialRel": "esriSpatialRelIntersects",
+            "inSR": "4326", "outSR": "4326", "outFields": fields, "f": "json"}
+
+
+def active_wildfire(attributes, prefix=""):
+    # NIFC: WF=wildfire, RX=prescribed fire, CX=incident complex.
+    # Retain complexes and unknown categories conservatively.
+    category = attributes.get(prefix + "IncidentTypeCategory")
+    if isinstance(category, str) and category.strip().upper() == "RX":
+        return False
+    out = finite_number(attributes.get(prefix + "FireOutDateTime"))
+    return out is None or out <= 0
 
 
 def is_allowed_nws_url(url: Optional[str]) -> bool:
-    """Return True only for https URLs on an allowlisted NWS host."""
-    if not url:
+    try:
+        parsed = urlparse(url) if isinstance(url, str) else None
+        return bool(parsed and parsed.scheme == "https" and parsed.hostname in ALLOWED_NWS_HOSTS
+                    and parsed.port in (None, 443) and not parsed.username and not parsed.password)
+    except ValueError:
         return False
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        return False
-    return parsed.hostname in ALLOWED_NWS_HOSTS
 
-# 15-minute in-memory cache
-cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0,
-    "created_at": ""
-}
-perimeter_cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0,
-    "created_at": ""
-}
-hotspots_cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0,
-    "created_at": ""
-}
-weather_cache: Dict[str, any] = {}
-
-alerts_cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0
-}
-CACHE_DURATION_SECS = 15 * 60
 
 def get_cardinal_direction(degrees: Optional[float]) -> str:
-    """Helper to convert wind degrees to a compass cardinal direction."""
+    degrees = finite_number(degrees)
     if degrees is None:
         return "N/A"
-    degrees = degrees % 360
-    directions = [
-        "N", "NNE", "NE", "ENE",
-        "E", "ESE", "SE", "SSE",
-        "S", "SSW", "SW", "WSW",
-        "W", "WNW", "NW", "NNW"
-    ]
-    idx = int((degrees + 11.25) / 22.5) % 16
-    return directions[idx]
+    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return directions[int((degrees % 360 + 11.25) / 22.5) % 16]
+
 
 @app.get("/api/health")
 async def health_check():
-    """Service health check endpoint."""
     return {"status": "ok", "time": time.time()}
+
 
 @app.get("/api/incidents")
 async def get_incidents(response: Response = None):
-    """
-    Fetch active wildfire incidents in Utah from NIFC.
-    Uses an in-memory cache to prevent rate-limiting public services.
-    """
-    now = time.time()
-    
-    # Return cached data if still valid
-    if cache["data"] is not None and now < cache["expiry"]:
-        logger.info("Serving incident data from in-memory cache.")
-        if response:
-            response.headers["X-Data-Timestamp"] = cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return cache["data"]
-        
-    logger.info("Cache expired or empty. Fetching from NIFC ArcGIS REST API...")
-    
-    params = {
-        "where": "POOState='US-UT' OR POOState='UT'",
-        "outFields": "*",
-        "outSR": "4326",  # WGS84 coordinates
-        "f": "json"       # Return JSON format
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(NIFC_API_URL, params=params)
-            
-        if response.status_code != 200:
-            logger.error(f"NIFC API returned HTTP status {response.status_code}")
-            raise HTTPException(status_code=502, detail="Bad Gateway: NIFC API returned error status.")
-            
-        raw_data = response.json()
-        if "error" in raw_data:
-            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
-            logger.error(f"NIFC API returned error JSON: {error_msg}")
-            raise HTTPException(status_code=502, detail=f"Bad Gateway: NIFC API returned error: {error_msg}")
-        features = raw_data.get("features", [])
-        
-        cleaned_incidents = []
-        for feature in features:
-            attributes = feature.get("attributes", {})
-            geometry = feature.get("geometry", {})
-            
-            # Extract coordinates (WGS84: x=longitude, y=latitude)
-            lon = geometry.get("x")
-            lat = geometry.get("y")
-            
-            # Skip records without valid coordinates
-            if lat is None or lon is None:
+    async def load():
+        raw = await fetch_arcgis(NIFC_API_URL, {
+            "where": "POOState='US-UT' OR POOState='UT'", "outFields": "*", "outSR": "4326", "f": "json"})
+        cleaned = []
+        malformed = False
+        for feature in raw["features"]:
+            feature = mapping(feature)
+            attrs, geom = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
+            if not active_wildfire(attrs):
                 continue
-                
-            cleaned_incidents.append({
-                "id": attributes.get("UniqueFireIdentifier") or str(attributes.get("OBJECTID")),
-                "object_id": attributes.get("OBJECTID"),
-                "name": attributes.get("IncidentName", "Unknown Wildfire"),
-                "acres": attributes.get("IncidentSize") or attributes.get("DailyAcres") or attributes.get("CalculatedAcres") or 0.0,
-                "containment": attributes.get("PercentContained"),
-                "discovered": attributes.get("FireDiscoveryDateTime") or attributes.get("IncidentStartDate"),
-                "cause": attributes.get("FireCause") or attributes.get("FireCauseGeneral") or "Undetermined",
-                "county": attributes.get("POOCounty", "Unknown County"),
-                "latitude": lat,
-                "longitude": lon
+            point = utah_point(geom.get("x"), geom.get("y"))
+            if not point or attrs.get("POOState", "UT") not in {"UT", "US-UT"}:
+                malformed = True
+                continue
+            cleaned.append({
+                "id": attrs.get("UniqueFireIdentifier") or str(attrs.get("OBJECTID")),
+                "object_id": attrs.get("OBJECTID"), "name": attrs.get("IncidentName") or "Unknown Wildfire",
+                "acres": finite_number(attrs.get("IncidentSize") or attrs.get("DailyAcres") or attrs.get("CalculatedAcres")) or 0.0,
+                "containment": finite_number(attrs.get("PercentContained")),
+                "discovered": attrs.get("FireDiscoveryDateTime") or attrs.get("IncidentStartDate"),
+                "cause": attrs.get("FireCause") or attrs.get("FireCauseGeneral") or "Undetermined",
+                "county": attrs.get("POOCounty") or "Unknown County", "latitude": point[1], "longitude": point[0],
             })
-            
-        # Store clean incidents in cache
-        cache["data"] = cleaned_incidents
-        cache["expiry"] = now + CACHE_DURATION_SECS
-        cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        logger.info(f"Successfully cached {len(cleaned_incidents)} active Utah wildfires.")
-        
-        if response:
-            response.headers["X-Data-Timestamp"] = cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return cleaned_incidents
-        
-    except httpx.RequestError as e:
-        logger.exception("HTTP Request to NIFC API failed.")
-        # Fallback to stale cache if NIFC is down
-        if cache["data"] is not None:
-            logger.warning("Serving stale cached incident data due to external API outage.")
-            if response:
-                response.headers["X-Data-Timestamp"] = cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return cache["data"]
-        raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to NIFC API: {str(e)}")
-    except Exception as e:
-        logger.exception("Unexpected error fetching incidents.")
-        if cache["data"] is not None:
-            logger.warning("Serving stale cached incident data due to unexpected error.")
-            if response:
-                response.headers["X-Data-Timestamp"] = cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return cache["data"]
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        if malformed:
+            raise UpstreamError("Incident feed contains unusable records; refusing an incomplete snapshot.")
+        return cleaned
+    return await cached(cache, load, response)
+
 
 @app.get("/api/perimeters")
 async def get_perimeters(response: Response = None):
-    """
-    Fetch active wildfire burn perimeters in Utah from NIFC WFIGS.
-    Uses an in-memory cache to prevent rate-limiting public services.
-    """
-    now = time.time()
-    
-    # Return cached data if still valid
-    if perimeter_cache["data"] is not None and now < perimeter_cache["expiry"]:
-        logger.info("Serving perimeter data from in-memory cache.")
-        if response:
-            response.headers["X-Data-Timestamp"] = perimeter_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return perimeter_cache["data"]
-        
-    logger.info("Perimeters cache expired or empty. Fetching from NIFC WFIGS Interagency Perimeters REST API...")
-    
-    url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
-    params = {
-        "where": "attr_POOState='US-UT' OR attr_POOState='UT'",
-        "outSR": "4326",
-        "f": "geojson"
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            res = await client.get(url, params=params)
-            
-        if res.status_code != 200:
-            logger.error(f"NIFC Perimeters API returned HTTP status {res.status_code}")
-            raise HTTPException(status_code=502, detail="Bad Gateway: NIFC Perimeters API returned error status.")
-            
-        raw_data = res.json()
-        if "error" in raw_data:
-            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
-            logger.error(f"NIFC Perimeters API returned error JSON: {error_msg}")
-            raise HTTPException(status_code=502, detail=f"Bad Gateway: NIFC Perimeters API returned error: {error_msg}")
-        
-        # Store raw GeoJSON FeatureCollection in cache
-        perimeter_cache["data"] = raw_data
-        perimeter_cache["expiry"] = now + CACHE_DURATION_SECS
-        perimeter_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        logger.info(f"Successfully cached perimeters from NIFC WFIGS.")
-        
-        if response:
-            response.headers["X-Data-Timestamp"] = perimeter_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return raw_data
-        
-    except httpx.RequestError as e:
-        logger.exception("HTTP Request to NIFC Perimeters API failed.")
-        if perimeter_cache["data"] is not None:
-            logger.warning("Serving stale cached perimeter data due to external API outage.")
-            if response:
-                response.headers["X-Data-Timestamp"] = perimeter_cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return perimeter_cache["data"]
-        raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to NIFC Perimeters API: {str(e)}")
-    except Exception as e:
-        logger.exception("Unexpected error fetching perimeters.")
-        if perimeter_cache["data"] is not None:
-            logger.warning("Serving stale cached perimeter data due to unexpected error.")
-            if response:
-                response.headers["X-Data-Timestamp"] = perimeter_cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return perimeter_cache["data"]
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    async def load():
+        raw = await fetch_arcgis(PERIMETERS_URL, {
+            "where": "attr_POOState='US-UT' OR attr_POOState='UT'", "outFields": "*", "outSR": "4326", "f": "geojson"}, timeout=30)
+        cleaned = []
+        eligible = []
+        for feature in raw["features"]:
+            if not active_wildfire(mapping(mapping(feature).get("properties")), prefix="attr_"):
+                continue
+            eligible.append(feature)
+            try:
+                geom = polygon_geometry(mapping(feature).get("geometry"))
+                if geom.intersects(UTAH_ENVELOPE):
+                    cleaned.append({**feature, "geometry": geom.__geo_interface__})
+            except (ValueError, TypeError, KeyError):
+                continue
+        return optional_snapshot(eligible, cleaned, {"type": "FeatureCollection", "features": cleaned})
+    return await cached(perimeter_cache, load, response)
+
 
 @app.get("/api/hotspots")
 async def get_hotspots(response: Response = None):
-    """
-    Fetch active satellite-detected thermal hotspots (MODIS/VIIRS) from NOAA HMS.
-    Filters by Utah bounding box envelope.
-    """
-    now = time.time()
-    if hotspots_cache["data"] is not None and now < hotspots_cache["expiry"]:
-        logger.info("Serving thermal hotspots data from cache.")
-        if response:
-            response.headers["X-Data-Timestamp"] = hotspots_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return hotspots_cache["data"]
-        
-    logger.info("Hotspots cache expired or empty. Fetching from NOAA HMS REST API...")
-    url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Fire_Detections_(v1)/FeatureServer/0/query"
-    params = {
-        "where": "1=1",
-        "geometryType": "esriGeometryEnvelope",
-        "geometry": "-114.05,37.0,-109.05,42.0",
-        "spatialRel": "esriSpatialRelIntersects",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "FID,Lon,Lat,YearDay,Time,Satellite,Method,FRP",
-        "f": "json"
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            res = await client.get(url, params=params)
-            
-        if res.status_code != 200:
-            logger.error(f"NOAA Hotspots API returned HTTP status {res.status_code}")
-            raise HTTPException(status_code=502, detail="Failed to query NOAA Hotspots service.")
-            
-        raw_data = res.json()
-        if "error" in raw_data:
-            error_msg = raw_data["error"].get("message", "Unknown ArcGIS error")
-            logger.error(f"NOAA Hotspots API returned error JSON: {error_msg}")
-            raise HTTPException(status_code=502, detail=f"Bad Gateway: NOAA Hotspots API returned error: {error_msg}")
-        features = raw_data.get("features", [])
-        
+    async def load():
+        raw = await fetch_arcgis(HOTSPOTS_URL, spatial_params("FID,Lon,Lat,YearDay,Time,Satellite,Method,FRP"), timeout=30)
         cleaned = []
-        for feat in features:
-            attribs = feat.get("attributes", {})
-            geom = feat.get("geometry", {})
-            
-            lon = geom.get("x") or attribs.get("Lon")
-            lat = geom.get("y") or attribs.get("Lat")
-            
-            if lat is None or lon is None:
+        for feature in raw["features"]:
+            feature = mapping(feature)
+            attrs, geom = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
+            lon = geom.get("x") if geom.get("x") is not None else attrs.get("Lon")
+            lat = geom.get("y") if geom.get("y") is not None else attrs.get("Lat")
+            point = utah_point(lon, lat)
+            if point:
+                cleaned.append({"fid": attrs.get("FID"), "latitude": point[1], "longitude": point[0],
+                                "satellite": attrs.get("Satellite", "Unknown"), "method": attrs.get("Method", "Unknown"),
+                                "frp": finite_number(attrs.get("FRP")) or 0.0,
+                                "time": attrs.get("Time", ""), "yearday": attrs.get("YearDay", "")})
+        return optional_snapshot(raw["features"], cleaned)
+    return await cached(hotspots_cache, load, response)
+
+
+@app.get("/api/smoke")
+async def get_smoke(response: Response = None):
+    async def load():
+        params = spatial_params("FID,Satellite,Start,End_,Density")
+        for index, url in enumerate((SMOKE_URL, SMOKE_FALLBACK_URL)):
+            try:
+                raw = await fetch_arcgis(url, params)
+                cleaned = []
+                for feature in raw["features"]:
+                    feature = mapping(feature)
+                    attrs, geom = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
+                    try:
+                        if not arcgis_polygon(geom.get("rings")).intersects(UTAH_ENVELOPE):
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    cleaned.append({"fid": attrs.get("FID") if attrs.get("FID") is not None else attrs.get("OBJECTID"),
+                                    "satellite": attrs.get("Satellite"), "start": attrs.get("Start"), "end": attrs.get("End_"),
+                                    "density": attrs.get("Density", "Light"), "rings": geom["rings"]})
+                return optional_snapshot(raw["features"], cleaned)
+            except (UpstreamError, httpx.RequestError, ValueError):
+                if index:
+                    raise
+                logger.warning("Primary smoke service failed; trying replica.")
+    return await cached(smoke_cache, load, response)
+
+
+def calculate_pm25_aqi(pm25: float) -> int:
+    """EPA 2024 PM2.5 breakpoints; truncate concentration to one decimal place."""
+    pm25 = finite_number(pm25)
+    if pm25 is None or pm25 < 0:
+        return 0
+    if pm25 >= 325.4:
+        return 500
+    pm25 = math.floor(pm25 * 10) / 10
+    for low, high, index_low, index_high in (
+        (0, 9.0, 0, 50), (9.1, 35.4, 51, 100), (35.5, 55.4, 101, 150),
+        (55.5, 125.4, 151, 200), (125.5, 225.4, 201, 300), (225.5, 325.4, 301, 500),
+    ):
+        if pm25 <= high:
+            return math.floor((index_high - index_low) / (high - low) * (pm25 - low) + index_low + 0.5)
+    return 500
+
+
+@app.get("/api/aqi")
+async def get_aqi(response: Response = None):
+    async def load():
+        raw = await fetch_arcgis(AQI_URL, spatial_params(
+            "OBJECTID,location_id,city,location,lastUpdated,value,unit,provider_name,instrument_name", "country='US'"))
+        cleaned = []
+        tiers = [(50, "#10b981", "Good"), (100, "#eab308", "Moderate"),
+                 (150, "#f97316", "Unhealthy for Sensitive Groups"), (200, "#ef4444", "Unhealthy"),
+                 (300, "#a855f7", "Very Unhealthy"), (500, "#7f1d1d", "Hazardous")]
+        for feature in raw["features"]:
+            feature = mapping(feature)
+            attrs, geom = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
+            point = utah_point(geom.get("x"), geom.get("y"))
+            pm25 = finite_number(attrs.get("value"))
+            if not point or pm25 is None or pm25 < 0:
                 continue
-                
-            cleaned.append({
-                "fid": attribs.get("FID"),
-                "latitude": lat,
-                "longitude": lon,
-                "satellite": attribs.get("Satellite", "Unknown"),
-                "method": attribs.get("Method", "Unknown"),
-                "frp": attribs.get("FRP", 0.0),
-                "time": attribs.get("Time", ""),
-                "yearday": attribs.get("YearDay", "")
-            })
-            
-        hotspots_cache["data"] = cleaned
-        hotspots_cache["expiry"] = now + CACHE_DURATION_SECS
-        hotspots_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        logger.info(f"Successfully cached {len(cleaned)} hotspots.")
-        
-        if response:
-            response.headers["X-Data-Timestamp"] = hotspots_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-            
-        return cleaned
-    except Exception as e:
-        logger.exception("Error fetching hotspots.")
-        if hotspots_cache["data"] is not None:
-            logger.warning("Serving stale cached hotspots.")
-            if response:
-                response.headers["X-Data-Timestamp"] = hotspots_cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return hotspots_cache["data"]
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
+            unit = attrs.get("unit")
+            if unit is not None and unit not in {"µg/m³", "μg/m³", "ug/m3", "µg/m3", "μg/m3", "ug/m^3"}:
+                continue
+            aqi = calculate_pm25_aqi(pm25)
+            _, color, tier = next(item for item in tiers if aqi <= item[0])
+            cleaned.append({"id": attrs.get("location_id") or attrs.get("OBJECTID"),
+                            "city": attrs.get("city") or attrs.get("location", "Unknown Location"),
+                            "name": attrs.get("location", "Unknown Monitor"), "pm25": pm25, "aqi": aqi,
+                            "tier": tier, "color": color, "latitude": point[1], "longitude": point[0],
+                            "provider": attrs.get("provider_name", "Government Monitor"), "last_updated": attrs.get("lastUpdated")})
+        return optional_snapshot(raw["features"], cleaned)
+    return await cached(aqi_cache, load, response)
+
+
+def quantity(properties, name):
+    obj = mapping(properties.get(name))
+    return finite_number(obj.get("value")), obj.get("unitCode")
+
+
+def observation_time(value):
+    if not isinstance(value, str):
+        raise ValueError("Missing observation timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Observation timestamp has no timezone")
+    timestamp = parsed.timestamp()
+    age = time.time() - timestamp
+    if not -300 <= age <= MAX_OBSERVATION_AGE_SECS:
+        raise ValueError("Observation is too old or in the future")
+    return timestamp
+
+
+def parse_weather(properties, station_id, station_name):
+    observation_time(properties.get("timestamp"))
+    speed, unit = quantity(properties, "windSpeed")
+    direction, _ = quantity(properties, "windDirection")
+    if speed is None or speed < 0 or (speed > 0 and (direction is None or not 0 <= direction <= 360)):
+        raise ValueError("Missing or invalid wind measurements")
+    conversions = {"wmoUnit:km_h-1": 1.0, "wmoUnit:m_s-1": 3.6,
+                   "wmoUnit:mi_h-1": 1.609344, "wmoUnit:kn": 1.852,
+                   "wmoUnit:kt": 1.852}
+    if unit not in conversions:
+        raise ValueError("Unknown wind speed unit")
+    kmh = speed * conversions[unit]
+    if not math.isfinite(kmh):
+        raise ValueError("Wind unit conversion overflowed")
+    temp, temp_unit = quantity(properties, "temperature")
+    if temp is not None:
+        if temp_unit == "wmoUnit:degF":
+            temp = (temp - 32) / 1.8
+        elif temp_unit == "wmoUnit:K":
+            temp -= 273.15
+        elif temp_unit not in (None, "wmoUnit:degC"):
+            temp = None
+        if temp is not None and not math.isfinite(temp * 1.8 + 32):
+            temp = None
+    humidity, _ = quantity(properties, "relativeHumidity")
+    if humidity is not None and not 0 <= humidity <= 100:
+        humidity = None
+    direction = direction % 360 if direction is not None and 0 <= direction <= 360 else None
+    return {"station_id": station_id, "station_name": station_name,
+            "wind_speed_mph": round(kmh / 1.609344, 1), "wind_speed_kmh": round(kmh, 1),
+            "wind_direction_deg": round(direction, 1) if direction is not None else None,
+            "wind_direction_cardinal": get_cardinal_direction(direction),
+            "temperature_f": round(temp * 1.8 + 32, 1) if temp is not None else None,
+            "temperature_c": round(temp, 1) if temp is not None else None,
+            "relative_humidity": round(humidity, 1) if humidity is not None else None,
+            "timestamp": properties.get("timestamp")}
+
+
+async def nws_json(client, url):
+    res = await client.get(url)
+    if res.status_code != 200:
+        raise UpstreamError("Weather service returned an error status.")
+    try:
+        data = res.json()
+    except ValueError as exc:
+        raise UpstreamError("Weather service returned invalid JSON.") from exc
+    if not isinstance(data, dict):
+        raise UpstreamError("Weather service returned an invalid document.")
+    return data
+
 
 @app.get("/api/weather")
 async def get_weather(
     latitude: float = Query(..., description="Latitude coordinate"),
-    longitude: float = Query(..., description="Longitude coordinate")
+    longitude: float = Query(..., description="Longitude coordinate"),
+    response: Response = None,
 ):
-    """
-    On-demand weather telemetry retrieval from api.weather.gov for a given lat/lon.
-    Queries up to 3 nearby NWS stations to handle outages and null observation values.
-    """
-    # Enforce geographic bounding box boundary validation (Utah region + buffer)
-    if not (35.0 <= latitude <= 45.0) or not (-116.0 <= longitude <= -107.0):
+    if not (35.0 <= latitude <= 45.0 and -116.0 <= longitude <= -107.0):
         raise HTTPException(status_code=400, detail="Coordinates must be within or near the Utah region boundary.")
-
-    # Evict oldest cache entries if memory footprint grows to prevent memory exhaustion DoS
-    if len(weather_cache) > 1000:
-        keys_to_remove = list(weather_cache.keys())[:100]
-        for key in keys_to_remove:
-            weather_cache.pop(key, None)
-        logger.info("Evicted oldest 100 weather cache entries to manage memory footprint.")
-
     cache_key = f"{latitude:.3f},{longitude:.3f}"
-    now = time.time()
-    if cache_key in weather_cache:
-        cached_item = weather_cache[cache_key]
-        if now < cached_item["expiry"]:
-            logger.info(f"Serving weather data for {cache_key} from in-memory cache.")
-            return cached_item["data"]
+    if cache_key not in weather_cache:
+        # Never evict an in-flight entry, or a second request could start a duplicate refresh.
+        if len(weather_cache) >= WEATHER_CACHE_LIMIT:
+            oldest = next((key for key, item in weather_cache.items()
+                           if not item.get("lock", asyncio.Lock()).locked()), None)
+            if oldest is None:
+                raise HTTPException(status_code=503, detail="Weather service is busy. Please retry.")
+            del weather_cache[oldest]
+        weather_cache[cache_key] = new_cache()
+    entry = weather_cache[cache_key]
 
-    headers = {"User-Agent": NWS_USER_AGENT}
-    points_url = f"https://api.weather.gov/points/{latitude:.4f},{longitude:.4f}"
-    
-    # follow_redirects disabled: the upstream response supplies some URLs, and we
-    # do not want a redirect to escape the NWS host allowlist (SSRF defense).
-    async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=False) as client:
-        try:
-            # 1. Retrieve the point grid information to get the stations endpoint
-            logger.info(f"Querying NWS points endpoint: {points_url}")
-            points_res = await client.get(points_url)
-            
-            if points_res.status_code != 200:
-                logger.error(f"NWS points endpoint returned {points_res.status_code}: {points_res.text}")
-                raise HTTPException(status_code=502, detail="Failed to locate weather grid points from api.weather.gov.")
-                
-            points_data = points_res.json()
-            stations_url = points_data.get("properties", {}).get("observationStations")
-            
-            if not stations_url:
-                raise HTTPException(status_code=502, detail="No weather observation stations link returned by api.weather.gov.")
-                
+    async def load():
+        async with httpx.AsyncClient(headers={"User-Agent": NWS_USER_AGENT}, timeout=10.0, follow_redirects=False) as client:
+            # Query the same rounded point used as the cache key.
+            points = await nws_json(client, f"https://api.weather.gov/points/{cache_key}")
+            stations_url = mapping(points.get("properties")).get("observationStations")
             if not is_allowed_nws_url(stations_url):
-                logger.warning(f"Blocking disallowed NWS stations URL: {stations_url!r}")
-                raise HTTPException(status_code=502, detail="Weather service returned an unexpected observation stations link.")
-                
-            # 2. Get list of nearby stations
-            logger.info(f"Querying NWS stations list: {stations_url}")
-            stations_res = await client.get(stations_url)
-            if stations_res.status_code != 200:
-                raise HTTPException(status_code=502, detail="Failed to retrieve observation stations list.")
-                
-            stations_data = stations_res.json()
-            features = stations_data.get("features", [])
-            
+                raise UpstreamError("Weather service returned an unexpected observation stations link.")
+            stations = await nws_json(client, stations_url)
+            features = stations.get("features")
+            if not isinstance(features, list):
+                raise UpstreamError("Weather service returned invalid observation stations.")
             if not features:
-                raise HTTPException(status_code=404, detail="No nearby weather observation stations found.")
-                
-            # Extract up to 3 stations
-            stations_to_try = features[:3]
-            last_error_detail = "Failed to query observations"
-            
-            # 3. Query stations sequentially (fallback up to 3 stations if observation data is missing or errors out)
-            for idx, station_feature in enumerate(stations_to_try):
-                station_props = station_feature.get("properties", {})
-                station_id = station_props.get("stationIdentifier")
-                station_name = station_props.get("name", "Unknown Station")
-                
-                if not station_id:
+                raise UpstreamError("No nearby weather observation stations found.", status_code=404)
+            for feature in features[:3]:
+                props = mapping(mapping(feature).get("properties"))
+                station_id = props.get("stationIdentifier")
+                if not isinstance(station_id, str) or not station_id.isascii() or not station_id.isalnum():
                     continue
-                
-                # Refuse non-alphanumeric station identifiers to prevent path
-                # traversal / credential injection in the stations URL.
-                if not station_id.isalnum():
-                    logger.warning(f"Skipping station with non-alphanumeric identifier: {station_id!r}")
-                    continue
-                    
-                obs_url = f"https://api.weather.gov/stations/{station_id}/observations/latest"
-                logger.info(f"Attempting station ({idx+1}/{len(stations_to_try)}): {station_id} at {obs_url}")
-                
                 try:
-                    obs_res = await client.get(obs_url)
-                    if obs_res.status_code != 200:
-                        logger.warning(f"Station {station_id} returned status code {obs_res.status_code}")
-                        continue
-                        
-                    obs_data = obs_res.json()
-                    properties = obs_data.get("properties", {})
-                    
-                    # Extract telemetry properties
-                    wind_speed_obj = properties.get("windSpeed") or {}
-                    wind_dir_obj = properties.get("windDirection") or {}
-                    temp_obj = properties.get("temperature") or {}
-                    rh_obj = properties.get("relativeHumidity") or {}
-                    
-                    wind_speed_ms = wind_speed_obj.get("value")
-                    wind_dir_deg = wind_dir_obj.get("value")
-                    temp_c = temp_obj.get("value")
-                    relative_humidity = rh_obj.get("value")
-                    
-                    # If wind data is missing, treat it as a failure and try the next station
-                    if wind_speed_ms is None or wind_dir_deg is None:
-                        logger.warning(f"Station {station_id} observations had missing/null wind telemetry. Trying next station.")
-                        last_error_detail = f"Station {station_id} had null wind measurements."
-                        continue
-                    
-                    # Unit conversions:
-                    # NWS speed is returned in km/h or m/s. 
-                    # Checking unitCode to perform correct conversion, standard unit is usually m/s or km/h.
-                    # NWS API docs define standard unit for windSpeed as wmoUnit:km_h-1 (which is km/h).
-                    # If it represents km/h, speed_mph = km/h * 0.621371.
-                    # If it is m/s, speed_mph = m/s * 2.23694. Let's inspect unitCode.
-                    unit_code = wind_speed_obj.get("unitCode", "")
-                    
-                    raw_speed = float(wind_speed_ms)
-                    if "km_h-1" in unit_code:
-                        wind_speed_kmh = raw_speed
-                        wind_speed_mph = raw_speed * 0.621371
-                    elif "m_s-1" in unit_code:
-                        wind_speed_kmh = raw_speed * 3.6
-                        wind_speed_mph = raw_speed * 2.23694
-                    else:
-                        # Fallback default assuming km/h
-                        wind_speed_kmh = raw_speed
-                        wind_speed_mph = raw_speed * 0.621371
-                        
-                    # Temperature conversions (C to F)
-                    temp_f = None
-                    if temp_c is not None:
-                        temp_f = float(temp_c) * 1.8 + 32
-                        
-                    cardinal = get_cardinal_direction(wind_dir_deg)
-                    
-                    logger.info(f"Successfully retrieved telemetry from station {station_id}")
-                    weather_data = {
-                        "station_id": station_id,
-                        "station_name": station_name,
-                        "wind_speed_mph": round(wind_speed_mph, 1),
-                        "wind_speed_kmh": round(wind_speed_kmh, 1),
-                        "wind_direction_deg": round(wind_dir_deg, 1),
-                        "wind_direction_cardinal": cardinal,
-                        "temperature_f": round(temp_f, 1) if temp_f is not None else None,
-                        "temperature_c": round(temp_c, 1) if temp_c is not None else None,
-                        "relative_humidity": round(relative_humidity, 1) if relative_humidity is not None else None,
-                        "timestamp": properties.get("timestamp")
-                    }
-                    weather_cache[cache_key] = {
-                        "data": weather_data,
-                        "expiry": now + 300  # cache for 5 minutes
-                    }
-                    return weather_data
-                    
-                except Exception as ex:
-                    logger.warning(f"Error querying station {station_id}: {str(ex)}")
-                    last_error_detail = str(ex)
-                    continue
-            
-            # If we fall through the loop, we could not get valid wind data
-            raise HTTPException(status_code=502, detail=f"Failed to fetch valid meteorological observations from any nearby station. Last error: {last_error_detail}")
-            
-        except httpx.RequestError as e:
-            logger.exception("HTTP connection error to NWS api.weather.gov")
-            raise HTTPException(status_code=503, detail=f"Service Unavailable: Failed to connect to Weather Service: {str(e)}")
+                    data = await nws_json(client, f"https://api.weather.gov/stations/{station_id}/observations/latest")
+                    result = parse_weather(mapping(data.get("properties")), station_id, props.get("name", "Unknown Station"))
+                    observed = observation_time(result["timestamp"])
+                    return LoadedData(result, min(time.time() + 300, observed + MAX_OBSERVATION_AGE_SECS),
+                                      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(min(time.time(), observed))))
+                except (UpstreamError, httpx.RequestError, ValueError, TypeError):
+                    logger.warning("Invalid/unavailable observation at station %s; trying next station.", station_id)
+            raise UpstreamError("Failed to fetch valid meteorological observations from any nearby station.")
+    return await cached(entry, load, response, ttl=300)
 
-@app.on_event("startup")
+
+def parse_boundaries(data):
+    features = feature_list(data, geojson=True)
+    result, malformed = [], False
+    for feature in features:
+        feature = mapping(feature)
+        try:
+            geom = polygon_geometry(feature.get("geometry"))
+            if not geom.intersects(UTAH_ENVELOPE):
+                malformed = True
+                continue
+            props = mapping(feature.get("properties"))
+            if not isinstance(props.get("NAME"), str) or not props["NAME"].strip():
+                raise ValueError("Municipality name is missing or invalid")
+            result.append({"name": props.get("NAME") or "Unknown", "object_id": props.get("OBJECTID"),
+                           "fips": props.get("FIPS"), "geometry": geom,
+                           "centroid": (geom.centroid.y, geom.centroid.x)})
+        except (ValueError, TypeError, KeyError):
+            malformed = True
+    if malformed:
+        raise ValueError("Incomplete municipal boundary snapshot")
+    if not result:
+        raise ValueError("No valid Utah municipal boundaries")
+    return result
+
+
+def persist_boundaries(data):
+    """Persist validated boundaries atomically; never leave a truncated cache file."""
+    BOUNDARIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=BOUNDARIES_PATH.parent, delete=False) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(data, handle, allow_nan=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, BOUNDARIES_PATH)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+async def recover_boundaries(force: bool = False) -> bool:
+    """Single-flight SGID boundary recovery with bounded exponential backoff."""
+    global muni_boundaries
+    lock = boundary_state.setdefault("lock", asyncio.Lock())
+    async with lock:
+        if not force and muni_boundaries:
+            return True
+        now = time.time()
+        if not force and now < boundary_state.get("retry_after", 0.0):
+            return bool(muni_boundaries)
+        try:
+            data = await fetch_arcgis(BOUNDARIES_URL, {
+                "where": "1=1", "outFields": "NAME,OBJECTID,FIPS", "outSR": "4326", "f": "geojson"}, timeout=60)
+            loaded = parse_boundaries(data)
+        except (httpx.RequestError, UpstreamError, ValueError):
+            failures = boundary_state.get("failures", 0) + 1
+            backoff = min(RETRY_BACKOFF_SECS * (2 ** (failures - 1)), BOUNDARY_MAX_BACKOFF_SECS)
+            boundary_state.update(failures=failures, retry_after=time.time() + backoff)
+            logger.exception("Municipal boundaries unavailable; alerts will report service unavailable.")
+            return False
+        try:
+            persist_boundaries(data)
+        except OSError:
+            # A read-only disk should not discard a valid download from this process's memory.
+            logger.exception("Could not persist municipal boundaries; using validated data in memory.")
+        muni_boundaries = loaded
+        boundary_state.update(failures=0, retry_after=0.0)
+        logger.info("Loaded %d Utah municipal boundaries.", len(loaded))
+        return True
+
+
+async def boundary_recovery_loop(max_attempts: int = BOUNDARY_MAX_BACKGROUND_ATTEMPTS) -> bool:
+    """Bounded background recovery when initial startup boundary load failed."""
+    for _ in range(max_attempts):
+        if muni_boundaries:
+            return True
+        delay = max(0.0, boundary_state.get("retry_after", 0.0) - time.time())
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if await recover_boundaries():
+            return True
+    return bool(muni_boundaries)
+
+
 async def startup_event():
-    """
-    On startup, download the Utah municipal boundaries GeoJSON if not present,
-    and parse all municipal boundary geometries into memory as Shapely polygons.
-    """
-    os.makedirs("app/data", exist_ok=True)
-    geojson_path = "app/data/utah_municipal_boundaries.geojson"
-    
-    if not os.path.exists(geojson_path):
-        logger.info("Utah Municipal Boundaries GeoJSON not found. Downloading from SGID...")
-        url = "https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/UtahMunicipalBoundaries/FeatureServer/0/query?where=1%3D1&outFields=NAME,OBJECTID,FIPS&outSR=4326&f=geojson"
+    global muni_boundaries
+    try:
+        with BOUNDARIES_PATH.open(encoding="utf-8") as handle:
+            loaded = parse_boundaries(json.load(handle))
+    except (OSError, ValueError, UpstreamError):
+        logger.warning("Municipal boundary file missing/invalid; attempting SGID recovery.")
+        await recover_boundaries(force=True)
+        return
+    muni_boundaries = loaded
+    boundary_state.update(failures=0, retry_after=0.0)
+    logger.info("Loaded %d Utah municipal boundaries.", len(loaded))
+
+
+def cap_time(value):
+    if value is None:
+        return None
+    number = finite_number(value)
+    if number is not None:
+        # ArcGIS date fields are epoch milliseconds, including dates prior to 2001.
+        return number / 1000
+    if isinstance(value, str):
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                res = await client.get(url)
-                if res.status_code == 200:
-                    with open(geojson_path, "w") as f:
-                        f.write(res.text)
-                    logger.info("Successfully downloaded and saved municipal boundaries GeoJSON.")
-                else:
-                    logger.error(f"Failed to download boundaries: HTTP {res.status_code}")
-        except Exception as e:
-            logger.exception("Error downloading municipal boundaries.")
-            
-    if os.path.exists(geojson_path):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+    raise ValueError("Invalid CAP time")
+
+
+def parse_cap(raw):
+    parsed, malformed = [], False
+    now = time.time()
+    for feature in raw["features"]:
+        feature = mapping(feature)
+        attrs, geometry = mapping(feature.get("attributes")), mapping(feature.get("geometry"))
+        if str(attrs.get("status", "Actual")).lower() != "actual":
+            continue
+        if str(attrs.get("msgType", "Alert")).lower() not in {"alert", "update"}:
+            continue
         try:
-            with open(geojson_path, "r") as f:
-                muni_data = json.load(f)
-            
-            global muni_boundaries
-            muni_boundaries = []
-            for feature in muni_data.get("features", []):
-                geom = shape(feature["geometry"])
-                props = feature.get("properties", {})
-                muni_boundaries.append({
-                    "name": props.get("NAME", "Unknown"),
-                    "object_id": props.get("OBJECTID"),
-                    "fips": props.get("FIPS"),
-                    "geometry": geom,
-                    "centroid": (geom.centroid.y, geom.centroid.x) # (lat, lon)
-                })
-            logger.info(f"Loaded {len(muni_boundaries)} Utah municipal boundaries.")
-        except Exception as e:
-            logger.exception("Error loading municipal boundaries GeoJSON.")
+            expires, effective = cap_time(attrs.get("expires")), cap_time(attrs.get("effective"))
+            if (expires is not None and expires <= now) or (effective is not None and effective > now):
+                continue
+            geom = arcgis_polygon(geometry.get("rings"))
+            if geom.intersects(UTAH_ENVELOPE):
+                parsed.append({"attributes": attrs, "geometry": geom, "rings": geometry["rings"]})
+        except (ValueError, TypeError):
+            malformed = True
+    if malformed:
+        # An unparseable live warning could cover Utah: preserve prior alerts rather than clear it.
+        raise UpstreamError("CAP feed contains malformed active warnings.")
+    return parsed
+
+
+def threat_geometry(lat, lon, speed, direction):
+    """Local miles projection corrects longitude scale and fills the complete wind corridor."""
+    miles_per_lat = 69.0
+    miles_per_lon = miles_per_lat * math.cos(math.radians(lat))
+    speed = finite_number(speed) or 0.0
+    direction = finite_number(direction)
+    dx = dy = 0.0
+    if direction is not None and speed > 0:
+        downwind = math.radians((direction + 180) % 360)
+        dx, dy = math.sin(downwind) * speed * 0.2, math.cos(downwind) * speed * 0.2
+    # Operate in local miles, then map back to WGS84 for municipality overlay.
+    base = Point(0, 0).buffer(5.0)
+    plume = (LineString([(0, 0), (dx, dy)]) if dx or dy else Point(0, 0)).buffer(5.0)
+    def to_geo(geom):
+        return translate(scale(geom, xfact=1 / miles_per_lon, yfact=1 / miles_per_lat, origin=(0, 0)), xoff=lon, yoff=lat)
+    return to_geo(base), to_geo(plume), miles_per_lon, miles_per_lat
+
+
+def merge_alerts(previous, current):
+    """During outages retain known warnings while admitting new, observable risks."""
+    combined = {item["city"]: deepcopy(item) for item in previous}
+    for item in current:
+        if item["city"] not in combined:
+            combined[item["city"]] = deepcopy(item)
+            continue
+        existing = combined[item["city"]]
+        if item["risk_level"] > existing.get("risk_level", 0):
+            existing.update(risk_level=item["risk_level"], risk_level_text=item["risk_level_text"])
+        for field in ("fires", "fema_alerts"):
+            values = existing.setdefault(field, [])
+            for value in item[field]:
+                if value not in values:
+                    values.append(deepcopy(value))
+    return sorted(combined.values(), key=lambda item: (
+        -item.get("risk_level", 0), min((fire["distance_miles"] for fire in item.get("fires", [])), default=999)))
+
 
 @app.get("/api/alerts")
-async def get_alerts():
-    """
-    Predictive 'Cities At Risk' alerting engine.
-    Applies wind vectors to active Utah wildfires, projects downwind threat zones,
-    and intersects them with Utah municipal boundary polygons.
-    Also queries active FEMA CAP Alerts and overlays them onto the risk queue.
-    """
-    # Serve from cache if fresh. The alerts engine is expensive (per-fire weather
-    # lookups + polygon overlay), so cache it the same 15 min as other feeds.
-    now = time.time()
-    if alerts_cache["data"] is not None and now < alerts_cache["expiry"]:
-        logger.info("Serving alerts from cache.")
-        return alerts_cache["data"]
-
-    # 1. Fetch active fires (making use of cache)
-    try:
-        incidents = await get_incidents()
-    except Exception as e:
-        logger.error(f"Failed to fetch incidents for threat check: {str(e)}")
-        incidents = []
-        
-    alerts = {} # maps city_name -> alert dict
-    
-    # 2. Query active FEMA CAP Alerts
-    fema_alerts = []
-    cap_url = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/CAP_Alerts_Feed/FeatureServer/0/query"
-    cap_params = {
-        "where": "countryCode='us' AND (event LIKE '%Wildfire%' OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
-        "outFields": "*",
-        "outSR": "4326",
-        "f": "json"
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            cap_res = await client.get(cap_url, params=cap_params)
-        if cap_res.status_code == 200:
-            cap_data = cap_res.json()
-            if "error" not in cap_data:
-                fema_alerts = cap_data.get("features", [])
-                logger.info(f"Fetched {len(fema_alerts)} active wildfire/evacuation alerts globally.")
-            else:
-                logger.warning(f"CAP Alerts Feed returned error: {cap_data['error'].get('message')}")
-    except Exception as e:
-        logger.warning(f"Failed to query CAP Alerts Feed: {str(e)}")
-
-    # Parse active FEMA alert polygons into memory
-    parsed_fema = []
-    for alert in fema_alerts:
-        attribs = alert.get("attributes", {})
-        geometry = alert.get("geometry", {})
-        if not geometry or "rings" not in geometry:
-            continue
+async def get_alerts(response: Response = None):
+    async def load():
+        if not muni_boundaries:
+            await recover_boundaries()
+        if not muni_boundaries:
+            raise UpstreamError("Utah municipal boundaries are unavailable.", status_code=503)
+        incident_response = Response()
         try:
-            rings = geometry["rings"]
-            if len(rings) == 1:
-                poly = Polygon(rings[0])
-            else:
-                poly = Polygon(rings[0], rings[1:])
-            parsed_fema.append({
-                "attributes": attribs,
-                "geometry": poly,
-                "rings": rings
+            incidents = await get_incidents(response=incident_response)
+        except HTTPException as exc:
+            raise UpstreamError("Incident data unavailable for alert evaluation.", status_code=503) from exc
+        degraded = incident_response.headers.get("X-Data-Stale") == "true"
+        dependencies = [cache] if cache["data"] is not None else []
+        cap_failed = False
+        try:
+            raw = await fetch_arcgis(CAP_URL, {
+                "where": "countryCode='us' AND (event LIKE '%Wildfire%' OR event LIKE '%Evacuate%' OR event LIKE '%Evacuation%')",
+                "outFields": "*", "outSR": "4326", "f": "json"}, timeout=10)
+            parsed_fema = parse_cap(raw)
+        except (httpx.RequestError, UpstreamError, ValueError):
+            logger.warning("CAP warnings unavailable; alert refresh is degraded.")
+            cap_failed, parsed_fema = True, []
+        semaphore = asyncio.Semaphore(8)
+
+        async def fire_weather(incident):
+            async with semaphore:
+                weather_response = Response()
+                try:
+                    weather = await asyncio.wait_for(get_weather(
+                        latitude=incident["latitude"], longitude=incident["longitude"], response=weather_response), timeout=12)
+                    entry = weather_cache.get(f'{incident["latitude"]:.3f},{incident["longitude"]:.3f}')
+                    if entry is not None:
+                        dependencies.append(entry)
+                    return weather, weather_response.headers.get("X-Data-Stale") == "true"
+                except (HTTPException, asyncio.TimeoutError):
+                    return None, True
+
+        weather_results = await asyncio.gather(*(fire_weather(incident) for incident in incidents))
+        alerts = {}
+
+        def city_alert(muni):
+            return alerts.setdefault(muni["name"], {
+                "city": muni["name"], "object_id": muni["object_id"], "fips": muni["fips"],
+                "risk_level": 1, "risk_level_text": "Ready", "centroid": muni["centroid"],
+                "fires": [], "fema_alerts": [],
             })
-        except Exception as e:
-            logger.warning(f"Error parsing alert polygon: {str(e)}")
 
-    # 3. Perform spatial overlay for each incident
-    DEG_PER_MILE = 0.0145
-    BASE_BUFFER_DEG = 5.0 * DEG_PER_MILE  # 5 miles base safety buffer
-
-    # Pre-fetch wind telemetry for all fires CONCURRENTLY (a single fire used to
-    # block up to ~10s doing serial NWS lookups; with 20 fires that was minutes).
-    # Each call is individually time-capped so one slow NWS response can't stall
-    # the whole alerts computation.
-    async def safe_get_weather(lat, lon):
-        try:
-            return await asyncio.wait_for(
-                get_weather(latitude=lat, longitude=lon), timeout=12.0)
-        except Exception:
-            return None
-
-    weather_tasks = [
-        safe_get_weather(inc["latitude"], inc["longitude"])
-        for inc in incidents
-        if inc.get("latitude") is not None and inc.get("longitude") is not None
-    ]
-    weather_results = await asyncio.gather(*weather_tasks)
-    weather_by_idx = {}
-    wi = 0
-    for idx, inc in enumerate(incidents):
-        if inc.get("latitude") is None or inc.get("longitude") is None:
-            continue
-        weather_by_idx[idx] = weather_results[wi]
-        wi += 1
-
-    for idx, incident in enumerate(incidents):
-        fire_lat = incident.get("latitude")
-        fire_lon = incident.get("longitude")
-        fire_name = incident.get("name")
-        fire_id = incident.get("id")
-        
-        if fire_lat is None or fire_lon is None:
-            continue
-            
-        # Use pre-fetched (parallel) wind telemetry for this fire
-        wind_speed_mph = 0.0
-        wind_dir_deg = None
-        wind_cardinal = "N/A"
-        weather = weather_by_idx.get(idx)
-        if weather is not None:
-            wind_speed_mph = weather.get("wind_speed_mph", 0.0)
-            wind_dir_deg = weather.get("wind_direction_deg")
-            wind_cardinal = weather.get("wind_direction_cardinal", "N/A")
-        fire_point = Point(fire_lon, fire_lat)
-        
-        # Calculate wind directional shift (downwind heading = wind heading + 180)
-        dx = 0.0
-        dy = 0.0
-        if wind_dir_deg is not None and wind_speed_mph > 0:
-            downwind_deg = (wind_dir_deg + 180) % 360
-            trig_deg = 90 - downwind_deg
-            trig_rad = math.radians(trig_deg)
-            # Shift length: wind_speed * 0.2 miles
-            shift_miles = wind_speed_mph * 0.2
-            shift_deg = shift_miles * DEG_PER_MILE
-            dx = math.cos(trig_rad) * shift_deg
-            dy = math.sin(trig_rad) * shift_deg
-            
-        # Compute threat zone (union of point and translated downwind point, buffered)
-        shifted_fire_point = translate(fire_point, xoff=dx, yoff=dy)
-        threat_zone = fire_point.union(shifted_fire_point).buffer(BASE_BUFFER_DEG)
-        
-        # Cross-reference with all loaded municipal boundaries
+        for incident, (weather, weather_stale) in zip(incidents, weather_results):
+            degraded = degraded or weather_stale
+            speed = weather.get("wind_speed_mph", 0.0) if weather else 0.0
+            direction = weather.get("wind_direction_deg") if weather else None
+            cardinal = weather.get("wind_direction_cardinal", "N/A") if weather else "N/A"
+            lat, lon = incident["latitude"], incident["longitude"]
+            base, plume, miles_per_lon, miles_per_lat = threat_geometry(lat, lon, speed, direction)
+            for muni in muni_boundaries:
+                if not plume.intersects(muni["geometry"]):
+                    continue
+                record = city_alert(muni)
+                if base.intersects(muni["geometry"]):
+                    record.update(risk_level=2, risk_level_text="Set")
+                local_city = scale(translate(muni["geometry"], xoff=-lon, yoff=-lat),
+                                   xfact=miles_per_lon, yfact=miles_per_lat, origin=(0, 0))
+                if not any(fire["id"] == incident["id"] for fire in record["fires"]):
+                    record["fires"].append({"name": incident["name"], "id": incident["id"],
+                                            "distance_miles": round(Point(0, 0).distance(local_city), 1),
+                                            "wind_speed_mph": speed, "wind_direction": cardinal, "wind_direction_deg": direction})
         for muni in muni_boundaries:
-            muni_geom = muni["geometry"]
-            muni_name = muni["name"]
-            
-            if threat_zone.intersects(muni_geom):
-                dist_deg = fire_point.distance(muni_geom)
-                dist_miles = dist_deg / DEG_PER_MILE
-                
-                # Check if it intersects the base buffer directly (Level 2: Set) vs. just the wind plume (Level 1: Ready)
-                base_zone = fire_point.buffer(BASE_BUFFER_DEG)
-                is_direct = base_zone.intersects(muni_geom)
-                
-                risk_level = 2 if (dist_miles <= 5.0 or is_direct) else 1
-                
-                # Add or update municipality record in alerts queue
-                if muni_name in alerts:
-                    if risk_level > alerts[muni_name]["risk_level"]:
-                        alerts[muni_name]["risk_level"] = risk_level
-                        alerts[muni_name]["risk_level_text"] = "Set" if risk_level == 2 else "Ready"
-                    
-                    # Prevent duplicate fire sources
-                    if not any(f["id"] == fire_id for f in alerts[muni_name]["fires"]):
-                        alerts[muni_name]["fires"].append({
-                            "name": fire_name,
-                            "id": fire_id,
-                            "distance_miles": round(dist_miles, 1),
-                            "wind_speed_mph": wind_speed_mph,
-                            "wind_direction": wind_cardinal,
-                            "wind_direction_deg": wind_dir_deg
-                        })
-                else:
-                    alerts[muni_name] = {
-                        "city": muni_name,
-                        "object_id": muni["object_id"],
-                        "fips": muni["fips"],
-                        "risk_level": risk_level,
-                        "risk_level_text": "Set" if risk_level == 2 else "Ready",
-                        "centroid": muni["centroid"],
-                        "fires": [{
-                            "name": fire_name,
-                            "id": fire_id,
-                            "distance_miles": round(dist_miles, 1),
-                            "wind_speed_mph": wind_speed_mph,
-                            "wind_direction": wind_cardinal,
-                            "wind_direction_deg": wind_dir_deg
-                        }],
-                        "fema_alerts": []
-                    }
-
-    # 4. Cross-reference municipal boundaries against active FEMA CAP warnings
-    for muni in muni_boundaries:
-        muni_geom = muni["geometry"]
-        muni_name = muni["name"]
-        
-        for p_fema in parsed_fema:
-            fema_geom = p_fema["geometry"]
-            fema_attr = p_fema["attributes"]
-            
-            if fema_geom.intersects(muni_geom):
-                if muni_name not in alerts:
-                    alerts[muni_name] = {
-                        "city": muni_name,
-                        "object_id": muni["object_id"],
-                        "fips": muni["fips"],
-                        "risk_level": 2, # Upgrade to Set immediately
-                        "risk_level_text": "Set",
-                        "centroid": muni["centroid"],
-                        "fires": [],
-                        "fema_alerts": []
-                    }
-                else:
-                    alerts[muni_name]["risk_level"] = 2
-                    alerts[muni_name]["risk_level_text"] = "Set"
-                    
-                alerts[muni_name]["fema_alerts"].append({
-                    "event": fema_attr.get("event"),
-                    "headline": fema_attr.get("headline"),
-                    "description": fema_attr.get("description"),
-                    "instruction": fema_attr.get("instruction"),
-                    "severity": fema_attr.get("severity"),
-                    "urgency": fema_attr.get("urgency"),
-                    "expires": fema_attr.get("expires"),
-                    "rings": p_fema["rings"]
-                })
-
-    # Sort results: Level 2 (Set) first, then by closest fire distance
-    alerts_list = list(alerts.values())
-    
-    def get_sort_key(item):
-        level = item["risk_level"]
-        distances = [f["distance_miles"] for f in item["fires"]]
-        min_dist = min(distances) if distances else 999.0
-        return (-level, min_dist)
-        
-    alerts_list.sort(key=get_sort_key)
-    alerts_cache["data"] = alerts_list
-    alerts_cache["expiry"] = time.time() + CACHE_DURATION_SECS
-    return alerts_list
-
-# Caches for smoke and air quality
-smoke_cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0,
-    "created_at": ""
-}
-aqi_cache: Dict[str, any] = {
-    "data": None,
-    "expiry": 0.0,
-    "created_at": ""
-}
-
-def calculate_pm25_aqi(pm25: float) -> int:
-    """
-    Calculate the US EPA Air Quality Index (AQI) for PM2.5 concentration.
-    Follows official EPA breakpoints.
-    """
-    if pm25 is None or pm25 < 0:
-        return 0
-    # Round PM2.5 to one decimal place as specified by EPA
-    pm25 = round(pm25, 1)
-    
-    # Official EPA Breakpoints (C_low, C_high, I_low, I_high)
-    if pm25 <= 9.0:
-        return int(round(((50 - 0) / (9.0 - 0.0)) * (pm25 - 0.0) + 0))
-    elif pm25 <= 35.4:
-        return int(round(((100 - 51) / (35.4 - 9.1)) * (pm25 - 9.1) + 51))
-    elif pm25 <= 55.4:
-        return int(round(((150 - 101) / (55.4 - 35.5)) * (pm25 - 35.5) + 101))
-    elif pm25 <= 125.4:
-        return int(round(((200 - 151) / (125.4 - 55.5)) * (pm25 - 55.5) + 151))
-    elif pm25 <= 225.4:
-        return int(round(((300 - 201) / (225.4 - 125.5)) * (pm25 - 125.5) + 201))
-    elif pm25 <= 325.4:
-        return int(round(((400 - 301) / (325.4 - 225.5)) * (pm25 - 225.5) + 301))
-    else:
-        # Cap index at 500
-        val = ((500 - 401) / (500.0 - 325.5)) * (min(pm25, 500.0) - 325.5) + 401
-        return int(round(min(val, 500.0)))
-
-@app.get("/api/smoke")
-async def get_smoke(response: Response = None):
-    """
-    Fetch active smoke plume polygons from NOAA HMS Smoke Detection layer.
-    Filters by Utah bounding box envelope.
-    """
-    now = time.time()
-    if smoke_cache["data"] is not None and now < smoke_cache["expiry"]:
-        logger.info("Serving smoke plume data from cache.")
-        if response:
-            response.headers["X-Data-Timestamp"] = smoke_cache.get("created_at", "")
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return smoke_cache["data"]
-        
-    primary_url = "https://services2.arcgis.com/C8EMgrsFcRFL6LrL/arcgis/rest/services/NOAA_Satellite_Smoke_Detection_(v1)/FeatureServer/0/query"
-    fallback_url = "https://services2.arcgis.com/r6iFVcMJeA4kB4GC/arcgis/rest/services/NOAA_HMS_Smoke_Detection_Replica/FeatureServer/0/query"
-    
-    params = {
-        "where": "1=1",
-        "geometryType": "esriGeometryEnvelope",
-        "geometry": "-114.05,37.0,-109.05,42.0",
-        "spatialRel": "esriSpatialRelIntersects",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "FID,Satellite,Start,End_,Density",
-        "f": "json"
-    }
-    
-    features = []
-    source_used = "primary"
-    
-    try:
-        # Try primary URL first
-        logger.info("Fetching smoke plumes from primary NOAA service...")
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.get(primary_url, params=params)
-            
-        if res.status_code == 200:
-            raw_primary = res.json()
-            if "error" not in raw_primary:
-                features = raw_primary.get("features", [])
-            else:
-                logger.warning(f"Primary NOAA Smoke API returned error: {raw_primary['error'].get('message')}")
-            
-        # If primary failed or returned 0 features, try fallback replica
-        if res.status_code != 200 or not features:
-            logger.info("Primary NOAA service returned empty or error. Trying fallback replica service...")
-            source_used = "fallback"
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res_fb = await client.get(fallback_url, params=params)
-            if res_fb.status_code == 200:
-                raw_fb = res_fb.json()
-                if "error" not in raw_fb:
-                    features = raw_fb.get("features", [])
-                else:
-                    logger.warning(f"Fallback NOAA Smoke API returned error: {raw_fb['error'].get('message')}")
-            else:
-                logger.error(f"Fallback NOAA Smoke API returned status {res_fb.status_code}")
-                if res.status_code != 200:
-                    # If both failed, raise error
-                    raise HTTPException(status_code=502, detail="Failed to query NOAA Smoke Plume service and fallback.")
-        
-        normalized = []
-        for feat in features:
-            attribs = feat.get("attributes", {})
-            geom = feat.get("geometry", {})
-            if not geom or "rings" not in geom:
-                continue
-                
-            normalized.append({
-                "fid": attribs.get("FID") or attribs.get("OBJECTID"),
-                "satellite": attribs.get("Satellite"),
-                "start": attribs.get("Start"),
-                "end": attribs.get("End_"),
-                "density": attribs.get("Density", "Light"),
-                "rings": geom.get("rings")
-            })
-            
-        smoke_cache["data"] = normalized
-        smoke_cache["expiry"] = now + CACHE_DURATION_SECS
-        smoke_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        logger.info(f"Successfully cached {len(normalized)} smoke plumes intersecting Utah using {source_used} source.")
-        if response:
-            response.headers["X-Data-Timestamp"] = smoke_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return normalized
-    except Exception as e:
-        logger.exception("Error fetching smoke plume data.")
-        if smoke_cache["data"] is not None:
-            logger.warning("Serving stale cached smoke data.")
-            if response:
-                response.headers["X-Data-Timestamp"] = smoke_cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return smoke_cache["data"]
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/aqi")
-async def get_aqi(response: Response = None):
-    """
-    Fetch live PM2.5 measurements from government monitoring stations.
-    Maps concentrations to EPA AQI values and health tiers.
-    Filters by Utah bounding box envelope.
-    """
-    now = time.time()
-    if aqi_cache["data"] is not None and now < aqi_cache["expiry"]:
-        logger.info("Serving air quality data from cache.")
-        if response:
-            response.headers["X-Data-Timestamp"] = aqi_cache.get("created_at", "")
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return aqi_cache["data"]
-        
-    url = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Air_Quality_PM25_Latest_Results/FeatureServer/0/query"
-    params = {
-        "where": "country='US'",
-        "geometryType": "esriGeometryEnvelope",
-        "geometry": "-114.05,37.0,-109.05,42.0",
-        "spatialRel": "esriSpatialRelIntersects",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "OBJECTID,location_id,city,location,lastUpdated,value,unit,provider_name,instrument_name",
-        "f": "json"
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.get(url, params=params)
-        if res.status_code != 200:
-            logger.error(f"OpenAQ PM2.5 API returned HTTP status {res.status_code}")
-            raise HTTPException(status_code=502, detail="Failed to query Air Quality service.")
-            
-        raw = res.json()
-        if "error" in raw:
-            error_msg = raw["error"].get("message", "Unknown ArcGIS error")
-            logger.error(f"Air Quality API returned error JSON: {error_msg}")
-            raise HTTPException(status_code=502, detail=f"Bad Gateway: Air Quality API returned error: {error_msg}")
-        features = raw.get("features", [])
-        
-        normalized = []
-        for feat in features:
-            attribs = feat.get("attributes", {})
-            geom = feat.get("geometry", {})
-            if not geom or "x" not in geom or "y" not in geom:
-                continue
-                
-            pm25_val = attribs.get("value", 0.0)
-            aqi = calculate_pm25_aqi(pm25_val)
-            
-            # Map AQI to EPA color and tier
-            if aqi <= 50:
-                color = "#10b981" # Green (Good)
-                tier = "Good"
-            elif aqi <= 100:
-                color = "#eab308" # Yellow (Moderate)
-                tier = "Moderate"
-            elif aqi <= 150:
-                color = "#f97316" # Orange (Unhealthy for Sensitive Groups)
-                tier = "Unhealthy for Sensitive Groups"
-            elif aqi <= 200:
-                color = "#ef4444" # Red (Unhealthy)
-                tier = "Unhealthy"
-            elif aqi <= 300:
-                color = "#a855f7" # Purple (Very Unhealthy)
-                tier = "Very Unhealthy"
-            else:
-                color = "#7f1d1d" # Maroon (Hazardous)
-                tier = "Hazardous"
-                
-            normalized.append({
-                "id": attribs.get("location_id") or attribs.get("OBJECTID"),
-                "city": attribs.get("city") or attribs.get("location", "Unknown Location"),
-                "name": attribs.get("location", "Unknown Monitor"),
-                "pm25": pm25_val,
-                "aqi": aqi,
-                "tier": tier,
-                "color": color,
-                "latitude": geom.get("y"),
-                "longitude": geom.get("x"),
-                "provider": attribs.get("provider_name", "Government Monitor"),
-                "last_updated": attribs.get("lastUpdated")
-            })
-            
-        aqi_cache["data"] = normalized
-        aqi_cache["expiry"] = now + CACHE_DURATION_SECS
-        aqi_cache["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        logger.info(f"Successfully cached {len(normalized)} Utah AQI monitoring stations.")
-        if response:
-            response.headers["X-Data-Timestamp"] = aqi_cache["created_at"]
-            response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp"
-        return normalized
-    except Exception as e:
-        logger.exception("Error fetching air quality data.")
-        if aqi_cache["data"] is not None:
-            logger.warning("Serving stale cached air quality data.")
-            if response:
-                response.headers["X-Data-Timestamp"] = aqi_cache.get("created_at", "")
-                response.headers["X-Data-Stale"] = "true"
-                response.headers["Access-Control-Expose-Headers"] = "X-Data-Timestamp, X-Data-Stale"
-            return aqi_cache["data"]
-        raise HTTPException(status_code=500, detail=str(e))
-
+            for warning in parsed_fema:
+                if warning["geometry"].intersects(muni["geometry"]):
+                    record = city_alert(muni)
+                    record.update(risk_level=2, risk_level_text="Set")
+                    record["fema_alerts"].append({**{key: warning["attributes"].get(key) for key in (
+                        "event", "headline", "description", "instruction", "severity", "urgency", "expires")}, "rings": warning["rings"]})
+        result = sorted(alerts.values(), key=lambda item: (
+            -item["risk_level"], min((fire["distance_miles"] for fire in item["fires"]), default=999)))
+        if degraded or cap_failed:
+            if alerts_cache["data"] is not None:
+                result = merge_alerts(alerts_cache["data"], result)
+            raise UpstreamError("Alert dependencies are unavailable or stale.", status_code=503, partial=result)
+        completed = time.time()
+        # A derived alert must never appear newer, or stay fresh longer, than its inputs.
+        return LoadedData(result, min([completed + CACHE_DURATION_SECS] + [entry["expiry"] for entry in dependencies]),
+                          min([time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed))]
+                              + [entry["created_at"] for entry in dependencies if entry["created_at"]]))
+    return await cached(alerts_cache, load, response)
