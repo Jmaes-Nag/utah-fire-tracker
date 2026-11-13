@@ -167,6 +167,77 @@ class WeatherTests(BackendTest):
         self.assertEqual(len(weather_feed.weather_cache), 2)
         self.assertNotIn("40.000,-111.000", weather_feed.weather_cache)
 
+    async def test_nws_lookups_for_distinct_points_share_a_global_concurrency_cap(self):
+        self.replace(weather_feed, "nws_fetch_slots", asyncio.Semaphore(2))
+        release = asyncio.Event()
+        in_flight = peak = 0
+
+        async def handler(request):
+            nonlocal in_flight, peak
+            if "/points/" in request.url.path:
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await release.wait()
+                in_flight -= 1
+                stations = "https://api.weather.gov/gridpoints/SLC/1,2/stations"
+                return httpx.Response(200, json={"properties": {"observationStations": stations}})
+            if request.url.path.endswith("/stations"):
+                return httpx.Response(200, json={"features": [{"properties": {"stationIdentifier": "KSLC"}}]})
+            return httpx.Response(200, json=observation())
+
+        self.transport(handler)
+        lookups = [asyncio.create_task(weather_feed.get_weather(40 + i * 0.01, -111)) for i in range(6)]
+        await asyncio.sleep(0.05)
+        self.assertEqual(peak, 2)
+        release.set()
+        results = await asyncio.gather(*lookups)
+        self.assertEqual(peak, 2)
+        self.assertTrue(all(result["station_id"] == "KSLC" for result in results))
+        self.assertEqual(len(weather_feed.weather_cache), 6)
+
+    async def test_saturated_nws_slots_fail_fast_without_upstream_calls(self):
+        self.replace(config, "NWS_SLOT_WAIT_SECS", 0.01)
+        self.replace(weather_feed, "nws_fetch_slots", asyncio.Semaphore(1))
+        await weather_feed.nws_fetch_slots.acquire()
+        self.weather_transport({"KSLC": observation()})
+        response = await self.api("/api/weather?latitude=40&longitude=-111")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.calls, [])
+        # The failure is backed off like any upstream error, so retries of this point stay off NWS too.
+        self.assertGreater(weather_feed.weather_cache["40.000,-111.000"]["retry_after"], 0)
+
+    async def test_saturated_nws_slots_still_serve_cached_and_stale_points(self):
+        self.replace(config, "NWS_SLOT_WAIT_SECS", 0.01)
+        self.replace(weather_feed, "nws_fetch_slots", asyncio.Semaphore(1))
+        self.weather_transport({"KSLC": observation()})
+        self.assertEqual((await self.api("/api/weather?latitude=40&longitude=-111")).status_code, 200)
+        await weather_feed.nws_fetch_slots.acquire()
+        fresh = await self.api("/api/weather?latitude=40&longitude=-111")
+        self.assertEqual(fresh.status_code, 200)
+        self.assertNotIn("X-Data-Stale", fresh.headers)
+        weather_feed.weather_cache["40.000,-111.000"]["expiry"] = 0
+        stale = await self.api("/api/weather?latitude=40&longitude=-111")
+        self.assertEqual(stale.status_code, 200)
+        self.assertEqual(stale.headers["X-Data-Stale"], "true")
+        self.assertEqual(len(self.calls), 3)
+
+    async def test_cancelled_lookup_releases_its_nws_slot(self):
+        self.replace(weather_feed, "nws_fetch_slots", asyncio.Semaphore(1))
+        started = asyncio.Event()
+
+        async def handler(request):
+            started.set()
+            await asyncio.Event().wait()
+
+        self.transport(handler)
+        lookup = asyncio.create_task(weather_feed.get_weather(40, -111))
+        await started.wait()
+        self.assertTrue(weather_feed.nws_fetch_slots.locked())
+        lookup.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await lookup
+        self.assertFalse(weather_feed.nws_fetch_slots.locked())
+
     async def test_coordinates_outside_existing_utah_buffer_rejected(self):
         for lat, lon in [(0, 0), (float("nan"), -111), (40, float("inf"))]:
             with self.subTest(lat=lat, lon=lon), self.assertRaises(HTTPException) as caught:

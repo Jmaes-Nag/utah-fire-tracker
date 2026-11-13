@@ -26,4 +26,10 @@ RETRY_BACKOFF_SECS = 30
 BOUNDARY_MAX_BACKOFF_SECS = CACHE_DURATION_SECS
 BOUNDARY_MAX_BACKGROUND_ATTEMPTS = 5
 WEATHER_CACHE_LIMIT = 1000
+# Global cap on in-flight NWS lookups (each up to 5 requests), shared by /api/weather and the
+# alert engine, so total upstream load stays bounded however many clients or points are requested.
+NWS_FETCH_CONCURRENCY = 4
+# How long a lookup may wait for a free slot before failing fast (serving stale data if cached).
+# Kept below alerts.WEATHER_TIMEOUT_SECS so the alert engine sees a clean failure, not a timeout.
+NWS_SLOT_WAIT_SECS = 5
 MAX_OBSERVATION_AGE_SECS = 2 * 60 * 60

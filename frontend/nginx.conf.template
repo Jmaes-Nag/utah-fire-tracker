@@ -1,6 +1,11 @@
 # Define rate limit zone for API requests (10MB memory zone, 5 requests/sec)
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=5r/s;
 
+# Much tighter zone for /api/weather: every distinct point is a cache miss costing up to
+# 5 National Weather Service requests under this deployment's User-Agent, so one client
+# must not be able to sweep points at the general API rate.
+limit_req_zone $binary_remote_addr zone=weather_limit:10m rate=1r/s;
+
 # Separate, generous zone for tile proxy requests so map tile traffic
 # cannot consume the API rate-limit bucket (which would starve /api feeds).
 limit_req_zone $binary_remote_addr zone=tiles_limit:10m rate=10r/s;
@@ -57,6 +62,22 @@ server {
         limit_req zone=api_limit burst=10 nodelay;
         # Resolve with Docker DNS at request time so backend replacement does
         # not leave Nginx forwarding to the old container address indefinitely.
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $backend_upstream backend:8000;
+        proxy_pass http://$backend_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 75s;
+    }
+
+    # Weather lookups get their own, stricter bucket (exact match wins over /api/).
+    # Proxy settings mirror /api/ above; keep the two in sync. No add_header here,
+    # so the server-level security headers are still inherited.
+    location = /api/weather {
+        limit_req zone=weather_limit burst=5 nodelay;
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $backend_upstream backend:8000;
         proxy_pass http://$backend_upstream;
