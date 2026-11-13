@@ -1,12 +1,13 @@
 """Shared fixtures and the base test case for offline backend tests."""
 
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from unittest.mock import patch
 
 import httpx
 
-from app import alerts, boundaries, cache, feeds, main
+from app import alerts, boundaries, cache, config, feeds, main
 from app import weather as weather_feed
 
 HTTP_CLIENT = httpx.AsyncClient
@@ -51,6 +52,8 @@ class BackendTest(unittest.IsolatedAsyncioTestCase):
             self.replace(feeds, name + "_cache", cache.new_cache())
         self.replace(alerts, "alerts_cache", cache.new_cache())
         self.replace(weather_feed, "weather_cache", {})
+        # A semaphore binds to the first event loop it waits on; each test gets its own loop.
+        self.replace(weather_feed, "nws_fetch_slots", asyncio.Semaphore(config.NWS_FETCH_CONCURRENCY))
         self.replace(boundaries, "boundary_state", boundaries.new_boundary_state())
         self.replace(boundaries, "muni_boundaries", boundaries.parse_boundaries(collection([boundary_feature()])))
 

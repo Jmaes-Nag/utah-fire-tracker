@@ -79,8 +79,8 @@ Split `test_reliability.py` (855 lines, 5 classes) along the same module lines a
 - Break `app.js` into ES modules without adding a build step: state, API/normalisation, map layers, incidents list, telemetry, alerts, location search, UI chrome (theme, collapsibles, tooltips). The test harness loads `app.js` as one script into a `vm` with hand-written DOM doubles, so it has to change in the same step.
 - Move tooltip copy (the `tooltipsData` block near line 1634) and other long HTML strings out of the logic.
 - `index.html` and `sources.html` each carry the same 21-line inline Tailwind config plus duplicated theme logic. Extract to a shared file.
-- Replace the Tailwind CDN script with a built or vendored stylesheet. It is the reason the CSP needs `'unsafe-inline'` and `'unsafe-eval'`.
-- Pin and add SRI hashes for markercluster and Turf (`@turf/turf@6` floats); only Leaflet has them today. Consider vendoring all of them.
+- Replace the Tailwind Play script (now pinned and self-hosted as `frontend/vendor/tailwindcss-3.4.17.js`, because its CDN sends no CORS header for SRI) with a built stylesheet. The Play runtime is the reason the CSP needs `'unsafe-inline'` and `'unsafe-eval'`.
+- Done: every CDN script and stylesheet except Google Fonts (whose CSS varies by browser) is version-pinned with an SRI hash.
 - Wind-corridor and cardinal-direction logic exists in both `app.js` and `main.py`. Decide whether the browser should ask the backend instead.
 
 ## Phase 5 — Infra odds and ends

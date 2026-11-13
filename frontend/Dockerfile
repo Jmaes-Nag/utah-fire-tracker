@@ -8,6 +8,7 @@ COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
 # Copy static frontend files
 COPY index.html sources.html styles.css app.js /usr/share/nginx/html/
+COPY vendor/ /usr/share/nginx/html/vendor/
 
 EXPOSE 80
 

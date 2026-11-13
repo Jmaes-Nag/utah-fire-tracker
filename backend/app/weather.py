@@ -19,6 +19,8 @@ logger = logging.getLogger("wildfire-tracker")
 router = APIRouter()
 
 weather_cache: dict[str, Any] = {}
+# Cache hits never take a slot; only lookups that actually call NWS do (see observation_snapshot).
+nws_fetch_slots = asyncio.Semaphore(config.NWS_FETCH_CONCURRENCY)
 
 
 def is_allowed_nws_url(url: str | None) -> bool:
@@ -121,6 +123,43 @@ async def nws_json(client, url):
     return data
 
 
+async def fetch_observation(point: str) -> LoadedData:
+    """Network work for one cache miss: points -> stations -> up to three station observations."""
+    async with httpx.AsyncClient(
+        headers={"User-Agent": config.NWS_USER_AGENT}, timeout=10.0, follow_redirects=False
+    ) as client:
+        # Query the same rounded point used as the cache key.
+        points = await nws_json(client, f"https://api.weather.gov/points/{point}")
+        stations_url = mapping(points.get("properties")).get("observationStations")
+        if not is_allowed_nws_url(stations_url):
+            raise UpstreamError("Weather service returned an unexpected observation stations link.")
+        stations = await nws_json(client, stations_url)
+        features = stations.get("features")
+        if not isinstance(features, list):
+            raise UpstreamError("Weather service returned invalid observation stations.")
+        if not features:
+            raise UpstreamError("No nearby weather observation stations found.", status_code=404)
+        for feature in features[:3]:
+            props = mapping(mapping(feature).get("properties"))
+            station_id = props.get("stationIdentifier")
+            if not isinstance(station_id, str) or not station_id.isascii() or not station_id.isalnum():
+                continue
+            try:
+                data = await nws_json(client, f"https://api.weather.gov/stations/{station_id}/observations/latest")
+                result = parse_weather(
+                    mapping(data.get("properties")), station_id, props.get("name", "Unknown Station")
+                )
+                observed = observation_time(result["timestamp"])
+                return LoadedData(
+                    result,
+                    min(time.time() + 300, observed + config.MAX_OBSERVATION_AGE_SECS),
+                    utc_stamp(min(time.time(), observed)),
+                )
+            except (UpstreamError, httpx.RequestError, ValueError, TypeError):
+                logger.warning("Invalid/unavailable observation at station %s; trying next station.", station_id)
+        raise UpstreamError("Failed to fetch valid meteorological observations from any nearby station.")
+
+
 async def observation_snapshot(latitude: float, longitude: float) -> Snapshot:
     """Latest usable station observation near a point; shared by the route and the alert engine."""
     west, south, east, north = config.WEATHER_BOUNDS
@@ -140,39 +179,17 @@ async def observation_snapshot(latitude: float, longitude: float) -> Snapshot:
     entry = weather_cache[cache_key]
 
     async def load():
-        async with httpx.AsyncClient(
-            headers={"User-Agent": config.NWS_USER_AGENT}, timeout=10.0, follow_redirects=False
-        ) as client:
-            # Query the same rounded point used as the cache key.
-            points = await nws_json(client, f"https://api.weather.gov/points/{cache_key}")
-            stations_url = mapping(points.get("properties")).get("observationStations")
-            if not is_allowed_nws_url(stations_url):
-                raise UpstreamError("Weather service returned an unexpected observation stations link.")
-            stations = await nws_json(client, stations_url)
-            features = stations.get("features")
-            if not isinstance(features, list):
-                raise UpstreamError("Weather service returned invalid observation stations.")
-            if not features:
-                raise UpstreamError("No nearby weather observation stations found.", status_code=404)
-            for feature in features[:3]:
-                props = mapping(mapping(feature).get("properties"))
-                station_id = props.get("stationIdentifier")
-                if not isinstance(station_id, str) or not station_id.isascii() or not station_id.isalnum():
-                    continue
-                try:
-                    data = await nws_json(client, f"https://api.weather.gov/stations/{station_id}/observations/latest")
-                    result = parse_weather(
-                        mapping(data.get("properties")), station_id, props.get("name", "Unknown Station")
-                    )
-                    observed = observation_time(result["timestamp"])
-                    return LoadedData(
-                        result,
-                        min(time.time() + 300, observed + config.MAX_OBSERVATION_AGE_SECS),
-                        utc_stamp(min(time.time(), observed)),
-                    )
-                except (UpstreamError, httpx.RequestError, ValueError, TypeError):
-                    logger.warning("Invalid/unavailable observation at station %s; trying next station.", station_id)
-            raise UpstreamError("Failed to fetch valid meteorological observations from any nearby station.")
+        # Wait briefly for a global slot, then fail fast: refresh() serves stale data if any and backs
+        # off this point, instead of letting a flood of distinct points queue up behind NWS.
+        try:
+            async with asyncio.timeout(config.NWS_SLOT_WAIT_SECS):
+                await nws_fetch_slots.acquire()
+        except TimeoutError:
+            raise UpstreamError("Weather service is busy. Please retry.", status_code=503) from None
+        try:
+            return await fetch_observation(cache_key)
+        finally:
+            nws_fetch_slots.release()
 
     return await refresh(entry, load, ttl=300)
 
