@@ -38,7 +38,7 @@ server {
     # Keep all add_header directives at this level: a location-level header
     # would suppress inherited CSP and other security headers on static pages.
     add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://unpkg.com https://services3.arcgis.com https://services2.arcgis.com https://services9.arcgis.com; connect-src 'self' https://nominatim.openstreetmap.org;" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://unpkg.com https://services3.arcgis.com https://services2.arcgis.com https://services9.arcgis.com; connect-src 'self' https://nominatim.openstreetmap.org;" always;
 
     # Only expose provider availability; the Carto credential stays server-side.
     location = /map-config.js {
